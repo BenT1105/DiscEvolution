@@ -1,0 +1,589 @@
+from __future__ import print_function
+import numpy as np
+from DiscEvolution.brent import brentq
+from DiscEvolution import opacity
+from DiscEvolution.constants import *
+
+################################################################################
+# Thermodynamics classes
+################################################################################
+class EOS_Table(object):
+    """Base class for equation of state evaluated at certain locations.
+
+    Stores pre-computed temperatures, viscosities etc. Derived classes need to
+    provide the funcitons called by set_grid.
+    """
+    def __init__(self):
+        self._gamma = 1.0
+        self._mu    = 2.4
+    
+    def set_grid(self, grid):
+        self._R      = grid.Rc
+        self._set_arrays()
+
+    def _set_arrays(self):
+        R  = self._R
+        self._cs     = self._f_cs(R)
+        self._H      = self._f_H(R)
+        self._nu     = self._f_nu(R)
+        self._alpha  = self._f_alpha(R)
+
+    @property
+    def cs(self):
+        return self._cs
+
+    @property
+    def H(self):
+        return self._H
+
+    @property
+    def nu(self):
+        return self._nu
+    
+    @property
+    def visc_mol(self):
+        return self._f_visc_mol()
+
+    @property
+    def alpha(self):
+        return self._alpha
+
+    @property
+    def gamma(self):
+        return self._gamma
+
+    @property
+    def mu(self):
+        return self._mu
+
+    def update(self, dt, Sigma, amax=None, star=None):
+        """Update the eos"""
+        pass
+
+    def ASCII_header(self):
+        """Print eos header"""
+        head = '# {} gamma: {}, mu: {}'
+        return head.format(self.__class__.__name__,
+                           self.gamma, self.mu)
+
+    def HDF5_attributes(self):
+        """Class information for HDF5 headers"""
+        def fmt(x):  return "{}".format(x)
+        return self.__class__.__name__, { "gamma" : fmt(self.gamma),
+                                          "mu" : fmt(self.mu) }
+    
+class LocallyIsothermalEOS(EOS_Table):
+    """Simple locally isothermal power law equation of state:
+
+    args:
+        h0      : aspect ratio at 1AU
+        q       : power-law index of sound-speed
+        alpha_t : turbulent alpha parameter
+        star    : stellar properties
+        mu      : mean molecular weight, default=2.4
+    """
+    def __init__(self, star, h0, q, alpha_t, mu=2.4):
+        super(LocallyIsothermalEOS, self).__init__()
+        
+        self._h0 = h0
+        self._cs0 = h0 * star.M**0.5
+        self._q = q
+        self._alpha_t = alpha_t
+        self._H0 = h0
+        self._T0 = (AU*Omega0)**2 * mu / GasConst
+        self._mu = mu
+
+    def _f_cs(self, R):
+        return self._cs0 * R**self._q
+
+    def _f_H(self, R):
+        return self._H0 * R**(1.5+self._q)
+    
+    def _f_nu(self, R):
+        return self._alpha_t * self._f_cs(R) * self._f_H(R)
+    
+    def _f_visc_mol(self):
+        return 2/3 * np.sqrt(self.mu * m_H * GasConst * self.T/ np.pi ) / sig_H2
+
+    def _f_visc_mol(self):
+        return 2/3 * np.sqrt(self.mu * m_H * GasConst * self.T/ np.pi ) / sig_H2
+
+    def _f_alpha(self, R):
+        return self._alpha_t
+
+    @property
+    def T(self):
+        return self._T0 * self.cs**2
+
+    @property
+    def Pr(self):
+        return np.zeros_like(self._R)
+
+    def ASCII_header(self):
+        """LocallyIsothermalEOS header string"""
+        head = super(LocallyIsothermalEOS, self).ASCII_header()
+        head += ', h0: {}, q: {}, alpha: {}'
+        return head.format(self._h0, self._q, self._alpha_t)
+
+    def HDF5_attributes(self):
+        """Class information for HDF5 headers"""
+        name, head = super(LocallyIsothermalEOS, self).HDF5_attributes()
+        head["h0"]   = "{}".format(self._h0)
+        head["q"]     = "{}".format(self._q)
+        head["alpha"] = "{}".format(self._alpha_t)
+        return name, head
+
+    @staticmethod
+    def from_file(filename):
+        raise NotImplementedError('')
+
+    @property
+    def star(self):
+        return self._star
+
+
+class SimpleDiscEOS(EOS_Table):
+    """Simple approximate irradiated/viscous equation of state from Liu et al.
+    (2019).
+
+    args:
+        alpha_t : turbulent alpha parameter
+        star    : stellar properties
+        mu      : mean molecular weight, default=2.33
+        K0      : Opacity constant (K = K0 T), default = 0.01
+    """
+    def __init__(self, star, alpha_t, mu=2.33, K0=0.01):
+        super(SimpleDiscEOS, self).__init__()
+        
+        self._alpha_t = alpha_t
+        self._mu = mu
+        self._K0 = K0
+        self._star = star
+        
+        self._Tnu = np.sqrt(27/64*alpha_t*Omega0*GasConst*K0/(mu*sig_SB))
+
+        self._set_constants()
+
+    def _set_constants(self):
+        star = self._star
+
+        Ls = star.Rs**2 * (star.T_eff / 5770)**4
+        self._Tirr0 = 150 * Ls**(2/7.) * star.M**(-4/7)
+        self._Tnu0 = self._Tnu * star.M**0.25
+
+        self._cs0 = (Omega0**-1/AU) * (GasConst / self._mu)**0.5
+        self._H0  = (Omega0**-1/AU) * (GasConst / (self._mu*self._star.M))**0.5
+        self._nu0 = self._alpha_t * self._cs0**2 / Omega0
+
+    def update(self, dt, Sigma, amax=1e-5, star=None):
+        if star:
+            self._star = star
+
+        self._set_constants()
+
+        Tirr = self._Tirr0 * self._R**(-3/7.)
+        Tvis = self._Tnu * Sigma * self._R**-0.75
+
+        self._T = (Tirr**4 + Tvis**4)**0.25
+        self._Sigma = Sigma
+        
+        self._set_arrays()
+
+    def set_grid(self, grid):
+        self._R = grid.Rc
+        self._T = None
+
+    def _set_arrays(self):
+        super(SimpleDiscEOS,self)._set_arrays()
+        self._Pr = self._f_Pr()
+    
+    def __H(self, R, T):
+        return self._H0 * np.sqrt(T * R*R*R)
+
+    def _f_cs(self, R):
+        return self._cs0 * self._T**0.5
+
+    def _f_H(self, R):
+        return self.__H(R, self._T)
+    
+    def _f_nu(self, R):
+        return self._alpha_t * self._f_cs(R) * self._f_H(R)
+    
+    def _f_visc_mol(self):
+        return 2/3 * np.sqrt(self.mu * m_H * GasConst * self.T/ np.pi ) / sig_H2
+
+    def _f_alpha(self, R):
+        return self._alpha_t
+
+    def _f_Pr(self):
+        kappa = self._K0 * self._T
+        tau = 0.5 * self._Sigma * kappa
+        f_esc = 1 + 2/(3*tau*tau)        
+        # Paardekooper et al. (2011) are missing a factor 4 (Bitsch & Kley 2011).  Corrected here.
+        Pr_1 =  4. * 2.25 * self._gamma * (self._gamma - 1) * f_esc
+        return 1. / Pr_1
+
+    @property
+    def T(self):
+        return self._T
+
+    @property
+    def Pr(self):
+        return self._Pr
+    
+    @property
+    def nu0(self):
+        return self._nu0
+
+    def ASCII_header(self):
+        """LocallyIsothermalEOS header string"""
+        head = super(SimpleDiscEOS, self).ASCII_header()
+        head += ', alpha: {}, mu: {}, K0= {}'
+        return head.format(self._alpha_t, self._mu, self._K0)
+
+    def HDF5_attributes(self):
+        """Class information for HDF5 headers"""
+        name, head = super(SimpleDiscEOS, self).HDF5_attributes()
+        head["alpha"] = "{}".format(self._alpha_t)
+        head['mu'] = "{}".format(self._mu)
+        head['K0'] = "{}".format(self._K0)
+        return name, head
+
+    @staticmethod
+    def from_file(filename):
+        import star
+
+        star = star.from_file(filename)
+        alpha = None
+
+        with open(filename) as f:
+            for line in f:
+                if not line.startswith('#'):
+                    raise AttributeError("Error: EOS type not found in header")
+                elif "SimpleDiscEOS" in line:
+                    string = line 
+                    break 
+                else:
+                    continue
+
+        kwargs = {}
+        for item in string.split(','):    
+            key, val = [ x.strip() for x in item.split(':')]
+
+            if key == 'mu' or key == 'K0':
+                kwargs[key] = float(val.strip())
+            elif key == 'alpha':
+                alpha = float(val.strip())
+
+
+        return SimpleDiscEOS(star, alpha, **kwargs)
+
+
+    @property
+    def star(self):
+        return self._star
+
+
+_sqrt2pi = np.sqrt(2*np.pi)
+class IrradiatedEOS(EOS_Table):
+    """Model for an active irradiated disc.
+
+    From Nakamoto & Nakagawa (1994), Hueso & Guillot (2005).
+
+    args:
+        star    : Stellar properties
+        alpha_t : Viscous alpha parameter
+        Tc      : External irradiation temperature (nebular), default=10
+        Tmax    : Maximum temperature allowed in the disc, default=1500
+        mu      : Mean molecular weight, default = 2.4
+        gamma   : Ratio of specific heats
+        kappa   : Opacity, default=Zhu2012
+        accrete : Whether to include heating due to accretion,
+                  default=True
+        psi : Ratio of disk winds to viscous turbulent alpha, default: psi = 0.
+        e_rad : fraction of energy lost to radiation (Suzuki et. al 2016), default = 1
+
+    Notes: 
+        If disk winds are being used, different choices of e_rad provide different heating
+        cases. See Suzuki et. al (2016). The special/edge cases are as follows.
+        - If e_rad = 3/(3 + psi), all (and only) turbulent energy goes into heating.
+        - If e_rad ~ 1, the weak winds case (from Suzuki et. al 2016) is applied.
+
+        If the user wishes to be self-consistent, one must choose a magnetic lever 
+        arm parameter (lambda) such that lambda = 1 + psi/(2(1 - e_rad)(3 + psi)). 
+    """
+    def __init__(self, star, alpha_t, Tc=10, Tmax=1500., mu=2.4, gamma=1.4,
+                 kappa=None,
+                 accrete=True, tol=None, psi=0, e_rad=1): # tol is no longer used
+        super(IrradiatedEOS, self).__init__()
+
+        self._star = star
+        
+        self._dlogHdlogRm1 = 2/7.
+
+        self._alpha_t = alpha_t
+        
+        self._Tc = Tc
+        self._Tmax = Tmax
+        self._mu = mu
+
+        self._accrete = accrete
+        self._gamma = gamma
+
+        if kappa is None:
+            self._kappa = opacity.Zhu2012
+        else:
+            self._kappa = kappa
+        
+        self._T = None
+
+        self._psi = psi
+
+        self._e_rad = e_rad
+
+        self._compute_constants()
+
+    def _compute_constants(self):
+        self._sigTc4 = sig_SB*self._Tc**4
+        self._cs0 = (Omega0**-1/AU) * (GasConst / self._mu)**0.5
+        self._H0  = (Omega0**-1/AU) * (GasConst / (self._mu*self._star.M))**0.5
+
+
+    def update(self, dt, Sigma, amax=1e-5, star=None):
+        if star:
+            self._star = star
+            self._compute_constants()
+        star = self._star
+            
+        # Temperature/density independent quantities:
+        R = self._R
+        Om_k = Omega0 * star.Omega_k(R)
+
+        X = star.Rau/R
+        f_flat  = (2/(3*np.pi)) * X**3
+        f_flare = 0.5 * self._dlogHdlogRm1 * X**2
+        tauPovertauR = 2.4 # Ratio of Planck to Rosseland optical depths.  Nakamoto => 2.4.
+        
+        # Heat capacity
+        mu = self._mu
+        #C_V = (k_B / (self._gamma - 1)) * (1 / (mu * m_H))
+        
+        alpha = self._alpha_t
+        if not self._accrete:
+            alpha = 0.
+
+        # Local references 
+        max_heat = sig_SB * (self._Tmax*self._Tmax)*(self._Tmax*self._Tmax)
+        star_heat = sig_SB * star.T_eff**4
+        sqrt2pi = np.sqrt(2*np.pi)            
+        def balance(Tm):
+            """Thermal balance"""
+            cs = np.sqrt(GasConst * Tm / mu)
+            H = cs / Om_k
+
+            kappa = self._kappa(Sigma / (sqrt2pi * H), Tm, amax)
+            tau = 0.5 * Sigma * kappa
+            tauR = tau
+            tau_P = tauPovertauR * tauR
+            H /= AU
+
+            # External irradiation
+            dEdt = self._sigTc4
+            
+            # Compute the heating from stellar irradiation
+            dEdt += star_heat * (f_flat + f_flare * (H/R))
+
+            # Viscous Heating
+            # If psi > 0, includes heating from disk winds based off and 
+            # derived from the model proposed by Suzuki et. al (2018, 
+            #  doi:10.1051/0004-6361/201628955).
+            visc_heat = self._e_rad*1.125*alpha*cs*cs * Om_k * (1 + self._psi/3)   
+            #dEdt += visc_heat*(0.375*tau*Sigma + 1./(kappa))
+            # Reformulation by MLB Jan 2026 for easier comparison with literature
+            visc_heat = visc_heat * Sigma
+            dEdt += visc_heat*(3./8.*tauR + 1./(1.*tau_P))
+            
+            # Prevent heating above the temperature cap:
+            dEdt = np.minimum(dEdt, max_heat)
+
+            # Cooling
+            Tm2 = Tm*Tm
+            dEdt -= sig_SB * Tm2*Tm2
+
+            # Change in temperature
+            return (dEdt/Omega0) # / (C_V*Sigma)
+
+        # Solve the balance using brent's method (needs ~ 20 iterations)
+        T0 = self._Tc
+        T1 = self._Tmax
+        if self._T is not None:
+            dedt = balance(self._T)
+            T0 = np.where(dedt > 0, self._T, T0)
+            T1 = np.where(dedt < 0, self._T, T1)
+
+        self._T =  brentq(balance, T0, T1)
+        self._Sigma = Sigma
+
+        # Save the opacity:
+        cs = np.sqrt(GasConst * self._T / mu)
+        H = cs / Om_k
+        self._kappa_arr = self._kappa(Sigma / (sqrt2pi * H), self._T, amax)
+        self._set_arrays()
+
+
+    def set_grid(self, grid):
+        self._R = grid.Rc
+        self._T = None
+
+    def _set_arrays(self):
+        super(IrradiatedEOS,self)._set_arrays()
+        self._Pr = self._f_Pr()
+    
+    def __H(self, R, T):
+        return self._H0 * np.sqrt(T * R*R*R)
+
+    def _f_cs(self, R):
+        return self._cs0 * self._T**0.5
+
+    def _f_H(self, R):
+        return self.__H(R, self._T)
+    
+    def _f_nu(self, R):
+        return self._alpha_t * self._f_cs(R) * self._f_H(R)
+    
+    def _f_visc_mol(self):
+        return 2/3 * np.sqrt(self.mu * m_H * GasConst * self.T/ np.pi ) / sig_H2
+
+    def _f_alpha(self, R):
+        return self._alpha_t
+
+    def _f_Pr(self):
+        kappa = self._kappa_arr
+        tau = 0.5 * self._Sigma * kappa
+        # Added intermediate optical depth term.
+        f_esc = 1 + 2.*np.sqrt(3.)/(3.*tau)+2/(3*tau*tau)
+        # Paardekooper et al. (2011) are missing a factor 4 (Bitsch & Kley 2011).  Corrected here.
+        Pr_1 =  4. * 2.25 * self._gamma * (self._gamma - 1) * f_esc
+        return 1. / Pr_1
+
+    @property
+    def T(self):
+        return self._T
+
+    @property
+    def Pr(self):
+        return self._Pr
+
+    @property
+    def star(self):
+        return self._star
+
+    def ASCII_header(self):
+        """IrradiatedEOS header"""
+        head = super(IrradiatedEOS, self).ASCII_header()
+        head += ', opacity: {}, T_extern: {}K, accrete: {}, alpha: {}'
+        head += ', Tmax: {}K'
+        return head.format(self._kappa.__class__.__name__,
+                           self._Tc, self._accrete, self._alpha_t,
+                           self._Tmax)
+
+    def HDF5_attributes(self):
+        """Class information for HDF5 headers"""
+        name, head = super(IrradiatedEOS, self).HDF5_attributes()
+
+        head["opacity"]  = self._kappa.__class__.__name__
+        head["T_extern"] = "{} K".format(self._Tc)
+        head["accrete"]  = "{}".format(bool(self._accrete))
+        head["alpha"]    = "{}".format(self._alpha_t)
+        head["Tmax"]     = "{} K".format(self._Tmax)
+
+        return name, head
+
+    @staticmethod
+    def from_file(filename):
+        import star
+
+        star = star.from_file(filename)
+        alpha = None
+
+        with open(filename) as f:
+            for line in f:
+                if not line.startswith('#'):
+                    raise AttributeError("Error: EOS type not found in header")
+                elif "IrradiatedEOS" in line:
+                    string = line 
+                    break 
+                else:
+                    continue
+
+        kwargs = {}
+        for item in string.split(','):    
+            key, val = [ x.strip() for x in item.split(':')]
+
+            if   key == 'gamma' or key == 'mu':
+                kwargs[key] = float(val.strip())
+            elif key == 'alpha':
+                alpha = float(val.strip())
+            elif key == 'accrete':
+                kwargs[key] = bool(val.strip())
+            elif key == 'T_extern':
+                kwargs['Tc'] = float(val.replace('K','').strip())
+
+        return IrradiatedEOS(star, alpha, **kwargs)
+
+def from_file(filename):
+    with open(filename) as f:
+        for line in f:
+            if not line.startswith('#'):
+                raise AttributeError("Error: EOS type not found in header")
+            elif "IrradiatedEOS" in line:
+                return IrradiatedEOS.from_file(filename)      
+            elif "SimpleDiscEOS" in line:
+                return SimpleDiscEOS.from_file(filename)
+            elif "LocallyIsothermalEOS" in line:
+                return LocallyIsothermalEOS.from_file(filename)
+            else:
+                continue
+
+
+if __name__ == "__main__":
+    import matplotlib.pyplot as plt
+    from .star import SimpleStar
+    from .grid import Grid
+
+    alpha = 1e-3
+    star = SimpleStar(M=1.0, R=3.0, T_eff=4280.)
+
+    active  = IrradiatedEOS(star, alpha)
+    passive = IrradiatedEOS(star, alpha, accrete=False)
+    marco   = IrradiatedEOS(star, alpha, kappa=opacity.Tazzari2016())
+
+    powerlaw = LocallyIsothermalEOS(star, 1/30., -0.25, alpha)
+
+    grid = Grid(0.1, 500, 1000, spacing='log')
+    
+    Sigma = 2.2e3 / grid.Rc**1.5
+
+    amax = 10 / grid.Rc**1.5
+    
+    c  = { 'active' : 'r', 'passive' : 'b', 'marco' : 'm',
+           'isothermal' : 'g' }
+    ls = { 0 : '-', 1 : '--' }
+    for i in range(2):
+        for eos, name in [[active, 'active'],
+                          [marco, 'marco'],
+                          [passive, 'passive'],
+                          [powerlaw, 'isothermal']]:
+            eos.set_grid(grid)
+            eos.update(0, Sigma, amax=amax)
+
+            label = None
+            if ls[i] == '-':
+                label = name
+                
+            plt.loglog(grid.Rc, eos.T, c[name] + ls[i], label=label)
+        Sigma /= 10
+    plt.legend()
+    plt.show()
+    
+                    
