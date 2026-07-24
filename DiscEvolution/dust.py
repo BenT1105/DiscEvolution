@@ -15,7 +15,7 @@ from DiscEvolution.reconstruction import DonorCell, VanLeer
 from DiscEvolution.chemistry import SimpleCOMolAbund
 from scipy.integrate import ode
 from scipy.signal import savgol_filter
-from scipy.optimize import root
+from scipy.optimize import least_squares
 
 
 
@@ -155,9 +155,9 @@ class DustyDisc(AccretionDisc):
         return self._St_max
     
     @property
-    def M_peb(self):
+    def M_flux(self):
         # Compute the mass flux of pebbles for planetesimal formation
-        return self._M_peb
+        return self._M_flux
     
     @property
     def is_critical(self):
@@ -591,7 +591,7 @@ class PlanetesimalFormation(object):
 
         else:
             self._R_planetesimal = np.full_like(disc.R, ((d_planetesimal/2) * 1e5) / AU) # convert to AU
-            self._M_planetesimal = 4/3 * np.pi * (self._R_planetesimal ** 3) * disc._rho_s
+            self._M_planetesimal = 4/3 * np.pi * ((self._R_planetesimal * AU) ** 3) * disc._rho_s
 
         # Set active evolution terms
 
@@ -607,7 +607,7 @@ class PlanetesimalFormation(object):
         self._St_min = St_min
         self._St_max = St_max
         
-        self._t = 1 / disc.Omega_k
+        self._t = 1 / (disc.Omega_k * Omega0) # convert to seconds
         self._trap_lifetime = trap_lifetime * self._t
         
         self._pla_eff = pla_eff
@@ -634,7 +634,8 @@ class PlanetesimalFormation(object):
         self._use_i_eq = str(i_init).lower() == 'eq'
 
         if self._use_e_eq or self._use_i_eq:
-            e2_eq, i2_eq = self._solve_equilibrium() # calculate equilibirum values
+            e2_eq = self._e_init() ** 2 # e = eta / 2
+            i2_eq = e2_eq / 4 # i = e / 2
 
         else:
             e2_eq = np.zeros_like(disc.R, dtype = float)
@@ -642,13 +643,13 @@ class PlanetesimalFormation(object):
 
         if self._use_e_eq:
             self._e2 = e2_eq
-        
+
         else:
             self._e2 = np.full_like(disc.R, e_init ** 2, dtype = float)
 
         if self._use_i_eq:
             self._i2 = i2_eq
-        
+
         else:
             self._i2 = np.full_like(disc.R, i_init ** 2, dtype = float)
 
@@ -670,37 +671,31 @@ class PlanetesimalFormation(object):
 
         return 6e-2 * (gamma * np.pi) ** 1.5 * (h / 0.05) ** 3 * (Mstar / 2.4)
 
-    # For determining equilibrium solution to eccentricity and inclination
+    def _e_init(self):
+        """
+        Computes the initial eccentricity of the planetesimals. 
+        Assumes that after formation there has not been enough time for dynamical friction to result in a mass dependent eccentricity (Lorek & Johansen 2022).
+        e = eta / 2, i = e / 2
 
-    def _equilibrium_residuals(self, x):
-        """Residuals for the full radial equilibrium solution."""
+        return: Initial eccentricity
+        """
 
-        # Unpack e2 and i2
-        e2 = np.maximum(x[:len(self.disc.R)], 0.0)
-        i2 = np.maximum(x[len(self.disc.R):], 0.0)
+        eta = self._eta()
 
-        # Compute derivatives
-        e2_dot = self.de2_dt(e2, i2)
-        i2_dot = self.di2_dt(e2, i2)
+        return eta / 2
 
-        return np.concatenate([e2_dot, i2_dot])
+    def _eta(self):
+        """
+        Computes the gas sub-Keplerian pressure gradient parameter (Fortier et al 2012).
 
-    def _solve_equilibrium(self):
-        """Solve for the equilibrium eccentricity and inclination over the full disc radius array."""
+        return: eta parameter
+        """
 
-        # Guess value for root finder
-        x0 = np.concatenate([np.full_like(self.disc.R, 0.1 ** 2, dtype = float), np.full_like(self.disc.R, (0.1 / 2) ** 2, dtype = float)])
+        disc = self.disc
+        Omega_k = disc.star.Omega_k(disc.R) * Omega0
+        rho_g = disc.midplane_gas_density
 
-        sol = root(self._equilibrium_residuals, x0 = x0, method = 'hybr')
-
-        if not sol.success:
-            return np.full_like(self.disc.R, 0.1 ** 2, dtype = float), np.full_like(self.disc.R, (0.1 / 2) ** 2, dtype = float)
-
-        # Remove negative values
-        e2_eq = np.maximum(sol.x[:len(self.disc.R)], 0.0)
-        i2_eq = np.maximum(sol.x[len(self.disc.R):], 0.0)
-
-        return e2_eq, i2_eq
+        return - disc.dP_dR * (AU * Omega0) ** 2 / (2 * Omega_k ** 2 * rho_g * disc.R * AU)
     
     # Eccentricity and inclination evolution equations (Kaufmann & Alibert 2023)
     
@@ -839,7 +834,7 @@ class PlanetesimalFormation(object):
         R = disc.R
         Mstar = disc.star.M * Msun
         Sigma_D = disc.Sigma_D[2]
-        Mpltsml = self._M_planetesimal * Mearth
+        Mpltsml = self._M_planetesimal
         Omega_k = disc.star.Omega_k(R) * Omega0
 
         # Reduced eccentricity and inclination
@@ -863,7 +858,7 @@ class PlanetesimalFormation(object):
         R = disc.R
         Mstar = disc.star.M * Msun
         Sigma_D = disc.Sigma_D[2]
-        Mpltsml = self._M_planetesimal * Mearth
+        Mpltsml = self._M_planetesimal
         Omega_k = disc.star.Omega_k(R) * Omega0
 
         # Reduced eccentricity and inclination
@@ -1111,7 +1106,7 @@ class PlanetesimalFormation(object):
         disc = self.disc
 
         R = disc.R
-        Omega_k  = disc.star.Omega_k(disc.R) * (AU * Omega0)
+        Omega_k  = disc.star.Omega_k(disc.R) * Omega0
 
         return Omega_k * R * AU * np.sqrt(5/8 * e2 + 1/2 * i2)
 
@@ -1159,7 +1154,7 @@ class PlanetesimalFormation(object):
         # Use reflect mode to avoid edge artifacts
         return gaussian_filter1d(v, sigma=N, mode='reflect')
 
-    def compute_M_peb(self, v_drift, disc):
+    def compute_M_flux(self, v_drift, disc):
         """
         Compute the mass flux of pebbles.
 
@@ -1168,16 +1163,12 @@ class PlanetesimalFormation(object):
             disc  : accretion disc model
 
         Returns:
-            M_peb: float, the mass flux of pebbles
+            M_flux: float, the mass flux of pebbles [g/s]
         """
 
         Sigma_d = disc.Sigma_D
-        self._pla_size = len(Sigma_d)-1
-        disc._M_peb = []
-        
-        St = disc.Stokes()
-        St_0 = St[0]    # grains
-        St_1 = St[1]    # pebbles
+        self._pla_size = len(Sigma_d) - 1
+        disc._M_flux = []
         
         # Test if smoothing helps
         v_drift_0 = np.insert(v_drift[0], 0, 0)
@@ -1191,22 +1182,60 @@ class PlanetesimalFormation(object):
         v_drift_1_smooth = self.g_smooth_v(v_drift_1, disc.R,N=10)
         #v_drift_2[np.isnan(v_drift_2)] = 0
         
-        # Heaviside functions
-        theta_St_min_0 = np.heaviside(St_0 - disc.St_min, 1.)
-        theta_St_min_1 = np.heaviside(St_1 - disc.St_min, 1.)
+        f1 = 2 * np.pi * (disc.R * AU) * np.abs(v_drift_0 * (AU * Omega0)) * Sigma_d[0]
+        f2 = 2 * np.pi * (disc.R * AU) * np.abs(v_drift_1 * (AU * Omega0)) * Sigma_d[1]
 
-        if disc.St_max is None:
-            theta_St_max_0 = 1
-            theta_St_max_1 = 1
-        else:
-            theta_St_max_0 = np.heaviside(disc.St_max - St_0, 1.)
-            theta_St_max_1 = np.heaviside(disc.St_max - St_1, 1.)
-        f1=2 * np.pi * disc.R * np.abs(v_drift_0) * Sigma_d[0] * theta_St_max_0 * theta_St_min_0
-        f2=2 * np.pi * disc.R * np.abs(v_drift_1) * Sigma_d[1] * theta_St_max_1 * theta_St_min_1
-        disc._M_peb.append(f1)
-        disc._M_peb.append(f2)
+        disc._M_flux.append(f1)
+        disc._M_flux.append(f2)
 
         disc._v_drift = np.array([v_drift_0, v_drift_1])
+
+    def compute_M_cr(self, disc):
+        """
+        Compute the critical pebble mass for planetesimal formation (equation 50 from Lenz et al. 2019).
+
+        Parameters:
+            disc  : accretion disc model
+
+        Returns:
+            M_cr  : criticall mass for planetesimal formation [g]
+        """
+
+        disc._M_cr = []
+
+        St = disc.Stokes()
+        St_0 = St[0] # grains
+        St_1 = St[1] # pebbles
+
+        # Heaviside function
+        theta_St_min_0 = np.heaviside(St_0 - disc.St_min, 1.0)
+        theta_St_min_1 = np.heaviside(St_1 - disc.St_min, 1.0)
+
+        if disc.St_max is None:
+            theta_St_max_0 = 1.0
+            theta_St_max_1 = 1.0
+
+        else:
+            theta_St_max_0 = np.heaviside(disc.St_max - St_0, 1.0)
+            theta_St_max_1 = np.heaviside(disc.St_max - St_1, 1.0)
+
+        dr = 5 * disc.H * AU # assumes surface density is approximately constant over trap size of 5 scale heights
+
+        ## Compute critical mass for grains
+
+        M_cr_insitu_0 = 2 * np.pi * (disc.R * AU) * disc.Sigma_D[0] * dr # calculates critical mass from grains within the trap
+        M_cr_flux_0 = self._trap_lifetime * disc._M_flux[0] # calculates critical mass from grain flux over trap lifetime
+
+        ## Compute critical mass for pebbles
+        
+        M_cr_insitu_1 = 2 * np.pi * (disc.R * AU) * disc.Sigma_D[1] * dr # calculates critical mass from pebbles within the trap
+        M_cr_flux_1 = self._trap_lifetime * disc._M_flux[1] # calculates critical mass from pebble flux over trap lifetime
+
+        f0 = self._pla_eff * (M_cr_insitu_0 + M_cr_flux_0) * theta_St_max_0 * theta_St_min_0
+        f1 = self._pla_eff * (M_cr_insitu_1 + M_cr_flux_1) * theta_St_max_1 * theta_St_min_1
+
+        disc._M_cr.append(f0)
+        disc._M_cr.append(f1)
 
     def is_flux_critical(self, disc):
         """
@@ -1216,44 +1245,53 @@ class PlanetesimalFormation(object):
             disc  : accretion disc model
 
         Returns:
-            Tuple[bool, float]: A tuple containing a boolean value indicating whether the flux is critical,
-            and the critical mass (M_cr) for planetesimal formation.
+            Tuple[bool]: A tuple containing a boolean value indicating whether the flux is critical
         """
-        
-        M_cr = disc._M_planetesimal / (self._pla_eff * self._trap_lifetime)
-        is_critical = self._pla_eff * self._trap_lifetime * disc._M_peb > disc._M_planetesimal
+
+        is_critical = disc._M_cr > disc._M_planetesimal
         disc._is_critical = is_critical
-        disc._M_cr = M_cr
         
         return is_critical
     
     def integrate(self, dt):
         """Advance the planetesimal eccentricity and inclination state by dt."""
         n = len(self.disc.R)
+        filter = self.disc.Sigma_D[2] > 0
 
         def f_integ(_, y):
             e2 = np.maximum(y[:n], 0.0)
             i2 = np.maximum(y[n:], 0.0)
 
-            e2_dot = self.de2_dt(e2, i2)
-            i2_dot = self.di2_dt(e2, i2)
+            e2_dot = np.where(filter, self.de2_dt(e2, i2), 0.0)
+            i2_dot = np.where(filter, self.di2_dt(e2, i2), 0.0)
 
             return np.concatenate([e2_dot, i2_dot])
 
-        integ = ode(f_integ).set_integrator('dopri5', rtol=1e-5, atol=1e-5)
+        integ = ode(f_integ).set_integrator('dopri5', rtol = 1e-5, atol = 1e-5)
         integ.set_initial_value(np.concatenate([self._e2, self._i2]), 0.0)
         integ.integrate(dt)
 
-        self._e2 = np.maximum(integ.y[:n], 0.0)
-        self._i2 = np.maximum(integ.y[n:], 0.0)
+        e2 = np.maximum(integ.y[:n], 0.0)
+        i2 = np.maximum(integ.y[n:], 0.0)
+
+        self._e2 = np.where(filter, e2, self._e2)
+        self._i2 = np.where(filter, i2, self._i2)
 
     def update(self, dt, disc, drift):
         """Do the standard disc update, and update planetesimals"""
         v_drift = drift.radial_drift_velocity(disc)
-        self.compute_M_peb(v_drift, disc)
+        self.compute_M_flux(v_drift, disc)
+        self.compute_M_cr(disc)
         self.is_flux_critical(disc)
 
-        self.integrate(dt)
+        #self.integrate(dt)
+
+        e2 = self.de2_dt(self._e2, self._i2) * dt + self._e2
+        i2 = self.di2_dt(self._e2, self._i2) * dt + self._i2
+
+        filter = disc.Sigma_D[2] > 0
+        self._e2 = np.where(filter, e2, self._e2)
+        self._i2 = np.where(filter, i2, self._i2)
 
     @property
     def e(self):
@@ -1519,7 +1557,7 @@ class SingleFluidDrift(object):
 
         return DeltaV
         
-    def _compute_sink_term(self, disc, pla_eff, d, M_peb, M_cr):
+    def _compute_sink_term(self, disc, pla_eff, d, M_flux):
         """
         Compute the sink term for dust particles in the disc.
 
@@ -1527,17 +1565,17 @@ class SingleFluidDrift(object):
             disc: The disc object containing relevant properties.
             pla_eff: The planetesimal efficiency.
             d: The distance between vortices.
-            M_peb: The pebble mass flux.
+            M_flux: The pebble mass flux.
         
         Returns:
             sink_term_0: The sink term for grains.
             sink_term_1: The sink term for pebbles.
         """
         Sigma = disc.Sigma
-        
-        # Sink term
-        sink_term_0 = (pla_eff / d) * M_peb[0] / (2 * np.pi * disc.R) * disc.is_critical[0]
-        sink_term_1 = (pla_eff / d) * M_peb[1] / (2 * np.pi * disc.R) * disc.is_critical[1]
+
+        # Sink term (R, d converted from AU to cm to match M_flux [g/s] and Sigma [g/cm^2])
+        sink_term_0 = (pla_eff / (d * AU)) * M_flux[0] / (2 * np.pi * disc.R * AU) * disc.is_critical[0]
+        sink_term_1 = (pla_eff / (d * AU)) * M_flux[1] / (2 * np.pi * disc.R * AU) * disc.is_critical[1]
 
         # Convert to dust fraction when returning
         return sink_term_0 / Sigma, sink_term_1 / Sigma
@@ -1572,7 +1610,7 @@ class SingleFluidDrift(object):
             # is modelled under Birnstiel et al. (2012).
             L0, L1 = 0, 0
             try:
-                L0, L1 = self._compute_sink_term(disc, disc.pla_eff, disc.d, disc.M_peb, disc.M_cr)
+                L0, L1 = self._compute_sink_term(disc, disc.pla_eff, disc.d, disc.M_flux)
                 
                 disc._eps[0] -= L0 * dt
                 disc._eps[1] -= L1 * dt
@@ -1580,7 +1618,7 @@ class SingleFluidDrift(object):
                 disc._eps[2] += L0 * dt
                 disc._eps[2] += L1 * dt
 
-                disc.grain_size[2] = np.where(disc.is_critical, 100 * 1e5, 0)[0]
+                disc.grain_size[2] = np.where(disc.is_critical, disc._R_planetesimal, 0)[0]
             except:
                 pass
 
@@ -1628,7 +1666,7 @@ class SingleFluidDrift(object):
             DeltaV: Radial drift velocity in AU per code time unit (1 code time = 2π years).
                 Shape: (2, Ncells-1) for [grains, pebbles] at cell edges.
                 To convert to physical units:
-                    - velocity [cm/s] = velocity_code * (AU / (2*np.pi*yr))
+                    - velocity [cm/s] = velocity_code * (AU * Omega0)
                     - velocity [AU/yr] = velocity_code / (2*np.pi)
             
             If ret_vphi is True, also returns:
