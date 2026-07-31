@@ -13,7 +13,7 @@ from DiscEvolution.constants import *
 from DiscEvolution.disc import AccretionDisc
 from DiscEvolution.reconstruction import DonorCell, VanLeer
 from DiscEvolution.chemistry import SimpleCOMolAbund
-from scipy.integrate import ode
+from scipy.integrate import ode, solve_ivp
 from scipy.signal import savgol_filter
 from scipy.optimize import least_squares
 
@@ -607,7 +607,7 @@ class PlanetesimalFormation(object):
         self._St_min = St_min
         self._St_max = St_max
         
-        self._t = 1 / (disc.Omega_k * Omega0) # convert to seconds
+        self._t = 1 / (disc.Omega_k)
         self._trap_lifetime = trap_lifetime * self._t
         
         self._pla_eff = pla_eff
@@ -783,7 +783,7 @@ class PlanetesimalFormation(object):
             -3/2 * e2[~filter] * mfp_H2[~filter] * cs[~filter] * rho_g[~filter] / (rho_s * Rpltsml[~filter] ** 2),
             -2 * e2[~filter] * vrel[~filter] * rho_g[~filter] / (6 * rho_s * Rpltsml[~filter]))
 
-        return e2_dot
+        return e2_dot / Omega0
 
     def di2_dt_drag(self, e2, i2):
         """
@@ -817,7 +817,7 @@ class PlanetesimalFormation(object):
             -3/4 * i2[~filter] * mfp_H2[~filter] * cs[~filter] * rho_g[~filter] / (rho_s * Rpltsml[~filter] ** 2),
             -1 * i2[~filter] * vrel[~filter] * rho_g[~filter] / (6 * rho_s * Rpltsml[~filter]))
 
-        return i2_dot
+        return i2_dot / Omega0
             
     def de2_dt_VS_pltsml(self, e2, i2):
         """
@@ -841,7 +841,9 @@ class PlanetesimalFormation(object):
         e_tilde = 2 * np.sqrt(e2) / (2 * Mpltsml / (3 * Mstar)) ** (1/3)
         i_tilde = 2 * np.sqrt(i2) / (2 * Mpltsml / (3 * Mstar)) ** (1/3)
 
-        return 1/6 * np.sqrt(Omega_k ** 2 * (R * AU) ** 4 / (Mstar) ** 2) * Sigma_D * (2 * Mpltsml / (3 * Mstar)) ** (1/3) * self._P_VS(e_tilde, i_tilde)
+        e2_dot = 1/6 * np.sqrt(Omega_k ** 2 * (R * AU) ** 4 / (Mstar) ** 2) * Sigma_D * (2 * Mpltsml / (3 * Mstar)) ** (1/3) * self._P_VS(e_tilde, i_tilde)
+
+        return e2_dot / Omega0
 
     def di2_dt_VS_pltsml(self, e2, i2):
         """
@@ -865,8 +867,10 @@ class PlanetesimalFormation(object):
         e_tilde = 2 * np.sqrt(e2) / (2 * Mpltsml / (3 * Mstar)) ** (1/3)
         i_tilde = 2 * np.sqrt(i2) / (2 * Mpltsml / (3 * Mstar)) ** (1/3)
 
-        return 1/6 * np.sqrt(Omega_k ** 2 * (R * AU) ** 4 / (Mstar) ** 2) * Sigma_D * (2 * Mpltsml / (3 * Mstar)) ** (1/3) * self._Q_VS(e_tilde, i_tilde)
-    
+        i2_dot = 1/6 * np.sqrt(Omega_k ** 2 * (R * AU) ** 4 / (Mstar) ** 2) * Sigma_D * (2 * Mpltsml / (3 * Mstar)) ** (1/3) * self._Q_VS(e_tilde, i_tilde)
+
+        return i2_dot / Omega0
+
     def de2_dt_VS_embryo(self, e2, i2):
         """
         Viscous stirring due to embryo-planetesimal interactions (Kaufmann & Alibert 2023).
@@ -890,7 +894,7 @@ class PlanetesimalFormation(object):
         Mp = self.planets.M * Mearth
         Rp = self.planets.R * AU
 
-        e2_VS = np.zeros_like(R, dtype = float)
+        e2_dot = np.zeros_like(R, dtype = float)
 
         for Rp_j, Mp_j in zip(Rp, Mp):
 
@@ -901,9 +905,9 @@ class PlanetesimalFormation(object):
             # Distance modulation function
             f_j = self._f_j(Rp_j, Mp_j)
 
-            e2_VS += f_j * Omega_k * Mp_j / (6 * np.pi * b_tilde * Mstar) * self._P_VS(e_tilde, i_tilde)
+            e2_dot += f_j * Omega_k * Mp_j / (6 * np.pi * b_tilde * Mstar) * self._P_VS(e_tilde, i_tilde)
 
-        return e2_VS
+        return e2_dot / Omega0
 
     def di2_dt_VS_embryo(self, e2, i2):
         """
@@ -928,7 +932,7 @@ class PlanetesimalFormation(object):
         Mp = self.planets.M * Mearth
         Rp = self.planets.R * AU
 
-        i2_VS = np.zeros_like(R, dtype = float)
+        i2_dot = np.zeros_like(R, dtype = float)
 
         for Rp_j, Mp_j in zip(Rp, Mp):
 
@@ -939,10 +943,10 @@ class PlanetesimalFormation(object):
             # Distance modulation function
             f_j = self._f_j(Rp_j, Mp_j)
 
-            i2_VS += f_j * Omega_k * Mp_j / (6 * np.pi * b_tilde * Mstar) * self._Q_VS(e_tilde, i_tilde)
+            i2_dot += f_j * Omega_k * Mp_j / (6 * np.pi * b_tilde * Mstar) * self._Q_VS(e_tilde, i_tilde)
 
-        return i2_VS
-    
+        return i2_dot / Omega0
+
     def de2_dt_DF(self, e2, i2):
         """
         Density fluctuation term in eccentricity evolution (Kaufmann & Alibert 2023).
@@ -963,7 +967,9 @@ class PlanetesimalFormation(object):
         Omega_k = disc.star.Omega_k(disc.R) * Omega0
         cs = disc.cs * (AU * Omega0)
 
-        return 400 * alpha * (H * R * AU * Sigma_G / Mstar) ** 2 * Omega_k + (4 * alpha / (3 * Omega_k * self.t_stop(e2, i2) ** 2)) * (cs / (Omega_k * R * AU)) ** 2
+        e2_dot = 400 * alpha * (H * R * AU * Sigma_G / Mstar) ** 2 * Omega_k + (4 * alpha / (3 * Omega_k * self.t_stop(e2, i2) ** 2)) * (cs / (Omega_k * R * AU)) ** 2
+
+        return e2_dot / Omega0
 
     def di2_dt_DF(self, e2, i2):
         """
@@ -985,7 +991,9 @@ class PlanetesimalFormation(object):
         Omega_k = disc.star.Omega_k(disc.R) * Omega0
         cs = disc.cs * (AU * Omega0)
 
-        return 4 * alpha * (H * R * AU * Sigma_G / Mstar) ** 2 * Omega_k + (2 * alpha / (3 * Omega_k * self.t_stop(e2, i2) ** 2)) * (cs / (Omega_k * R * AU)) ** 2
+        i2_dot = 4 * alpha * (H * R * AU * Sigma_G / Mstar) ** 2 * Omega_k + (2 * alpha / (3 * Omega_k * self.t_stop(e2, i2) ** 2)) * (cs / (Omega_k * R * AU)) ** 2
+
+        return i2_dot / Omega0
 
     # Eccentricity and inclination helper functions
 
@@ -1182,8 +1190,8 @@ class PlanetesimalFormation(object):
         v_drift_1_smooth = self.g_smooth_v(v_drift_1, disc.R,N=10)
         #v_drift_2[np.isnan(v_drift_2)] = 0
         
-        f1 = 2 * np.pi * (disc.R * AU) * np.abs(v_drift_0 * (AU * Omega0)) * Sigma_d[0]
-        f2 = 2 * np.pi * (disc.R * AU) * np.abs(v_drift_1 * (AU * Omega0)) * Sigma_d[1]
+        f1 = 2 * np.pi * (disc.R * AU) * np.abs(v_drift_0 * AU) * Sigma_d[0]
+        f2 = 2 * np.pi * (disc.R * AU) * np.abs(v_drift_1 * AU) * Sigma_d[1]
 
         disc._M_flux.append(f1)
         disc._M_flux.append(f2)
@@ -1250,11 +1258,11 @@ class PlanetesimalFormation(object):
 
         is_critical = disc._M_cr > disc._M_planetesimal
         disc._is_critical = is_critical
-        
+
         return is_critical
     
-    def integrate(self, dt):
-        """Advance the planetesimal eccentricity and inclination state by dt."""
+    def integrate_ode(self, dt):
+        """Advance the planetesimal eccentricity and inclination state by dt using scipy.integrate.ode."""
         n = len(self.disc.R)
         filter = self.disc.Sigma_D[2] > 0
 
@@ -1267,15 +1275,48 @@ class PlanetesimalFormation(object):
 
             return np.concatenate([e2_dot, i2_dot])
 
-        integ = ode(f_integ).set_integrator('dopri5', rtol = 1e-5, atol = 1e-5)
+        integ = ode(f_integ).set_integrator('vode', rtol = 1e-5, atol = 1e-5)
         integ.set_initial_value(np.concatenate([self._e2, self._i2]), 0.0)
         integ.integrate(dt)
 
         e2 = np.maximum(integ.y[:n], 0.0)
         i2 = np.maximum(integ.y[n:], 0.0)
 
-        self._e2 = np.where(filter, e2, self._e2)
-        self._i2 = np.where(filter, i2, self._i2)
+        self._e2 = np.where(filter, e2, (self._eta() / 2) ** 2)
+        self._i2 = np.where(filter, i2, (self._eta() / 4) ** 2)
+
+    def integrate_solve_ivp(self, dt):
+        """Advance the planetesimal eccentricity and inclination state by dt using scipy.integrate.solve_ivp."""
+        n = len(self.disc.R)
+        filter = self.disc.Sigma_D[2] > 0
+
+        def f_integ(_, y):
+            e2 = np.maximum(y[:n], 0.0)
+            i2 = np.maximum(y[n:], 0.0)
+
+            e2_dot = np.where(filter, self.de2_dt(e2, i2), 0.0)
+            i2_dot = np.where(filter, self.di2_dt(e2, i2), 0.0)
+
+            return np.concatenate([e2_dot, i2_dot])
+
+        y0 = np.concatenate([self._e2, self._i2])
+        sol = solve_ivp(f_integ, (0.0, dt), y0, method = 'LSODA', rtol = 1e-5, atol = 1e-5)
+
+        e2 = np.maximum(sol.y[:n, -1], 0.0)
+        i2 = np.maximum(sol.y[n:, -1], 0.0)
+
+        self._e2 = np.where(filter, e2, (self._eta() / 2) ** 2)
+        self._i2 = np.where(filter, i2, (self._eta() / 4) ** 2)
+
+    def integrate_euler(self, dt):
+        """Advance the planetesimal eccentricity and inclination state by dt using a forward Euler step."""
+        e2 = self.de2_dt(self._e2, self._i2) * dt + self._e2
+        i2 = self.di2_dt(self._e2, self._i2) * dt + self._i2
+
+        filter = self.disc.Sigma_D[2] > 0
+
+        self._e2 = np.where(filter, e2, (self._eta() / 2) ** 2)
+        self._i2 = np.where(filter, i2, (self._eta() / 4) ** 2)
 
     def update(self, dt, disc, drift):
         """Do the standard disc update, and update planetesimals"""
@@ -1284,14 +1325,7 @@ class PlanetesimalFormation(object):
         self.compute_M_cr(disc)
         self.is_flux_critical(disc)
 
-        #self.integrate(dt)
-
-        e2 = self.de2_dt(self._e2, self._i2) * dt + self._e2
-        i2 = self.di2_dt(self._e2, self._i2) * dt + self._i2
-
-        filter = disc.Sigma_D[2] > 0
-        self._e2 = np.where(filter, e2, self._e2)
-        self._i2 = np.where(filter, i2, self._i2)
+        self.integrate_euler(dt)
 
     @property
     def e(self):
@@ -1610,6 +1644,11 @@ class SingleFluidDrift(object):
             # is modelled under Birnstiel et al. (2012).
             L0, L1 = 0, 0
             try:
+                v_drift = self.radial_drift_velocity(disc, v_visc)
+                disc._planetesimal.compute_M_flux(v_drift, disc)
+                disc._planetesimal.compute_M_cr(disc)
+                disc._planetesimal.is_flux_critical(disc)
+
                 L0, L1 = self._compute_sink_term(disc, disc.pla_eff, disc.d, disc.M_flux)
                 
                 disc._eps[0] -= L0 * dt
@@ -1780,4 +1819,3 @@ if __name__ == "__main__":
     plt.ylabel('$\\Sigma_{\mathrm{D,G}}$')
     plt.ylim(ymin=1e-10)
     plt.show()
-    

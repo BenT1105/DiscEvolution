@@ -588,7 +588,7 @@ class PlanetesimalAccretion(object):
         """
 
         if v is None:
-            v = self._self.relative_velocity(Rp) 
+            v = self.relative_velocity(Rp) 
     
         c_s = self._disc.cs
 
@@ -604,11 +604,9 @@ class PlanetesimalAccretion(object):
         vrel = self.relative_velocity(Rp)
         Ma = self.Mach(Rp,vrel)
         Re = self.Reynolds(Rp,vrel)
-        for number in Re:
-            if number < 1: 
-                warnings.warn(f"Reynolds number of {number:.2f} found, setting to 1 to avoid division by zero.")
+        
         Re = np.where(Re < 1, 1, Re)
-     
+
         drag_coeff = np.zeros_like(Ma)
 
         # Calculate the drag coefficient for the different regimes
@@ -898,7 +896,7 @@ class PlanetesimalAccretion(object):
         """
 
         disc = self._disc
-        if r_pltsml == None:
+        if r_pltsml is None:
             r_pltsml = disc.interp(Rp, disc.R_planetesimal)
     
         eta_ice_arr = np.ones_like(Rp)
@@ -938,7 +936,7 @@ class PlanetesimalAccretion(object):
         em_mm = 20*(m_planetesimal/1e23)**(-1/15)*(Rp)**(9/20)*(2*m_planetesimal/Msun/(3*disc.star.M))**(1/3)
         
         # Eccentricity excited by protoplanet-planetesimal interaction
-        em_Mm = 6*(m_planetesimal/1e23)**(1/18)*(Rp)**(7/24)*((Mp*Mearth/Msun+m_planetesimal/Msun)/3*disc.star.M)**(1/3)
+        em_Mm = 6*(m_planetesimal/1e23)**(1/18)*(Rp)**(7/24)*((Mp*Mearth/Msun+m_planetesimal/Msun)/(3*disc.star.M))**(1/3)
         return np.max((em_Mm,em_mm),axis=0)
     
     def compute_v_ran(self, Rp, Mp):
@@ -1600,14 +1598,17 @@ class Bitsch2015Model(object):
             planets : Planets container
         """
 
-        if planets.N == 0: return
+        if planets.N == 0:
+            return
+        
         self.update()
         
         chem = False
         if planets.chem:
-            chem=True
+            chem = True
 
         f = self._f_gas
+
         def dMdt(R_p, M_core, M_env):
             Mdot_g = np.zeros_like(R_p)
             if self._gas_acc:
@@ -1616,13 +1617,13 @@ class Bitsch2015Model(object):
             Mdot_s = np.zeros_like(R_p)
             if self._peb_acc:
                 Mdot_s = self._peb_acc.computeMdot(R_p, M_core + M_env)
-                #planets.Mdot += Mdot_s
 
-            return Mdot_s*(1-f), Mdot_g + Mdot_s*f
+            return Mdot_s * (1 - f), Mdot_g + Mdot_s * f
 
         def dRdt(R_p, M_core, M_env):
             if self._migrate:
                 return self._migrate.migration_rate(R_p, M_core + M_env)
+            
             else:
                 return np.zeros_like(R_p)
 
@@ -1641,28 +1642,28 @@ class Bitsch2015Model(object):
             Mcdot, Medot = dMdt(R_p, M_core, M_env)
 
             # Compute the mass accretion rate due to planetesimal accretion
-            Mdot_pla = np.zeros_like(Mcdot)
+            Mdot_pla = np.zeros_like(R_p)
             if self._pl_acc:
-                Mdot_pla = self._pl_acc.computeMdot(R_p, M_core, Rdot)
+                Mdot_pla = self._pl_acc.computeMdot(R_p, M_core + M_env, Rdot)
 
             accreted = R_p <= Rmin
             Rdot[accreted] = Mcdot[accreted] = Medot[accreted] = 0
             
             dydt = np.empty_like(y)
-            dydt[:N]    = Rdot
-            dydt[N:2*N]  = Mcdot + Mdot_pla*(1-f)
-            dydt[2*N:3*N] = Medot + Mdot_pla*f
+            dydt[:N] = Rdot
+            dydt[N:2*N] = Mcdot + Mdot_pla * (1 - f)
+            dydt[2*N:3*N] = Medot + Mdot_pla * f
 
             if chem:
-                Xs, Xg =  self._compute_chem(R_p)
+                Xs, Xg = self._compute_chem(R_p)
                 Xs_pla = self._compute_chem_planetesimal(R_p)
 
-                Ms = Mcdot * f / (1-f)
+                Ms = Mcdot * f / (1 - f)
                 Mg = np.maximum(Medot - Ms, 0)
                 Nspec = Xs.shape[0]
 
-                dydt[ 3       *N:(3+  Nspec)*N] = (Mcdot*Xs + Mdot_pla*(1-f)*Xs_pla).ravel()
-                dydt[(3+Nspec)*N:(3+2*Nspec)*N] = (Ms*Xs + Mg*Xg + Mdot_pla*f*Xs_pla).ravel()
+                dydt[ 3       *N:(3+  Nspec)*N] = (Mcdot * Xs + Mdot_pla * (1 - f) * Xs_pla).ravel()
+                dydt[(3+Nspec)*N:(3+2*Nspec)*N] = (Ms * Xs + Mg * Xg + Mdot_pla * f * Xs_pla).ravel()
             
             return dydt
             
@@ -1673,6 +1674,7 @@ class Bitsch2015Model(object):
             Chem_env  = (planets.M_env  * planets.X_env).flat
             X0 = np.concatenate([planets.R, planets.M_core, planets.M_env,
                                  Chem_core, Chem_env])
+        
         else:
             X0 = np.concatenate([planets.R, planets.M_core, planets.M_env])
         
