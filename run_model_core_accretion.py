@@ -583,9 +583,10 @@ def run_model(config):
 
             planet_model.insert_new_planet(t_impl, R_impl, M_impl, planets)
 
-        Rs, Mcs, Mes, Mdot_tracker, X_cores, X_envs, disk_Mdot_p, disk_Mass, Tc, Sigc = [], [], [], [], [], [], []
+        Rs, Mcs, Mes, Mdot_tracker, X_cores, X_envs, disk_Mdot_p, disk_Mass, Tc, Sigc = [], [], [], [], [], [], [], [], [], []
         Mdot_planetesimal, Mdot_pebble, Mdot_migration, Mdot_gas = [], [], [], []
-        
+        M_iso_planetesimal, M_iso_pebble = [], []
+
         for i, planet in enumerate(planets):
             Rs.append([])
             Mcs.append([])
@@ -597,6 +598,9 @@ def run_model(config):
             Mdot_pebble.append([])
             Mdot_migration.append([])
             Mdot_gas.append([])
+
+            M_iso_planetesimal.append([])
+            M_iso_pebble.append([])
 
             if chemistry_params["on"]:
                 X_cores.append([[] for num in range(0, Nchem, 1)]) 
@@ -659,16 +663,18 @@ def run_model(config):
             # Mdot_tracker[count].append(planet_model._peb_acc.computeMdot(planet.R, planet.M))
 
             if planet_params["planetesimal_accretion"]:
-                Mdot_planetesimal[count].append(planet_model._pl_acc.computeMdotFortier(planet.R, planet.M))
+                Mdot_planetesimal[count].append(planet_model._pl_acc.computeMdotFortier(planet.R, planet.M) * yr)
+                M_iso_planetesimal[count].append(planet_model._pl_acc.M_iso_pltsml(planet.R))
 
             if planet_params["pebble_accretion"]:
-                Mdot_pebble[count].append(planet_model._peb_acc.computeMdot(planet.R, planet.M))
-                                
+                Mdot_pebble[count].append(planet_model._peb_acc.computeMdot(planet.R, planet.M) * yr)
+                M_iso_pebble[count].append(planet_model._peb_acc.M_iso(planet.R))
+
             if planet_params["migrate"]:
-                Mdot_migration[count].append(planet_model._pl_acc.computeMdotMigration(planet.R, planet.M, planet_model._migrate.migration_rate(planet.R, planet.M)))
+                Mdot_migration[count].append(planet_model._pl_acc.computeMdotMigration(planet.R, planet.M, planet_model._migrate.migration_rate(planet.R, planet.M)) * yr)
 
             if planet_params["gas_accretion"]:
-                Mdot_gas[count].append(planet_model._gas_acc.computeMdot(planet.R, planet.M_core, planet.M_env))
+                Mdot_gas[count].append(planet_model._gas_acc.computeMdot(planet.R, planet.M_core, planet.M_env) * yr)
 
             if chemistry_params["on"]:
                 for count2, chem in enumerate(planet.X_core):
@@ -724,6 +730,16 @@ def run_model(config):
     data["Sigma_planetesimals"] = []
     data["e_planetesimals"] = []
     data["i_planetesimals"] = []
+    data["de2_dt"] = []
+    data["di2_dt"] = []
+    data["de2_dt_drag"] = []
+    data["di2_dt_drag"] = []
+    data["de2_dt_VS_embryo"] = []
+    data["di2_dt_VS_embryo"] = []
+    data["de2_dt_VS_pltsml"] = []
+    data["di2_dt_VS_pltsml"] = []
+    data["de2_dt_DF"] = []
+    data["di2_dt_DF"] = []
     data["T"] = []
 
     if alpha_SS > 5e-3:
@@ -769,6 +785,10 @@ def run_model(config):
                     else:
                         disc._gas(dt, disc, [dust_frac, gas_chem, ice_chem])
 
+                ## Update planetesimals
+                if disc._planetesimal:
+                    disc._planetesimal.update(dt, disc, dust)
+
                 ## Do dust evolution
                 if transport_params['radial_drift']:
                     dust(dt, disc, gas_tracers = gas_chem, dust_tracers = ice_chem)
@@ -797,9 +817,6 @@ def run_model(config):
                     disc.chem.gas.data[:] = np.maximum(disc.chem.gas.data, 0)
                     disc.chem.ice.data[:] = np.maximum(disc.chem.ice.data, 0)
 
-                if disc._planetesimal:
-                    disc._planetesimal.update(dt, disc, dust)
-
                 if chemistry_params["on"]:
                     ## Exclude planetesimals from chemistry (assume they don't chemically interact with the disc)
                     if disc._planetesimal:
@@ -827,17 +844,20 @@ def run_model(config):
                     print('\rTime: {} Myr'.format(t / (1.e6 * 2 * np.pi)), flush = "True")
                     print('\rdt: {} yr'.format(dt / (2 * np.pi)), flush = "True")
                 
+                if n % 5 == 0:
+                    time_keeper.append(t / (2 * np.pi))
+
+                    disk_v = disc._gas.viscous_velocity(disc, disc.Sigma)
+                    disk_Mdot = -2 * np.pi * disc._grid.Rc[0:-1] * disc.Sigma[0:-1] * disk_v* (AU * AU) * (yr / Msun)
+                    disk_Mdot_star.append(disk_Mdot[0])
+                    disk_Mass.append(disc.Mtot())
+                    Tc.append(disc.T[0])
+                    Sigc.append(disc.Sigma[0])
+
                 if planet_params['include_planets']:
-                    
+
                     ## Collect data for planet growth track and chemistry
                     if n % 5 == 0:
-                        disk_v = disc._gas.viscous_velocity(disc, disc.Sigma)
-                        disk_Mdot = -2 * np.pi * disc._grid.Rc[0:-1] * disc.Sigma[0:-1] * disk_v* (AU * AU) * (yr / Msun)
-                        disk_Mdot_star.append(disk_Mdot[0])
-                        disk_Mass.append(disc.Mtot())
-                        Tc.append(disc.T[0])
-                        Sigc.append(disc.Sigma[0])
-
                         for count, planet in enumerate(planets):
                             Rs[count].append(planet.R.copy())
                             Mcs[count].append(planet.M_core.copy())
@@ -846,23 +866,23 @@ def run_model(config):
                             # Mdot_tracker[count].append(planet_model._peb_acc.computeMdot(planet.R, planet.M))
 
                             if planet_params["planetesimal_accretion"]:
-                                Mdot_planetesimal[count].append(planet_model._pl_acc.computeMdotFortier(planet.R, planet.M))
+                                Mdot_planetesimal[count].append(planet_model._pl_acc.computeMdotFortier(planet.R, planet.M) * yr)
+                                M_iso_planetesimal[count].append(planet_model._pl_acc.M_iso_pltsml(planet.R))
 
                             if planet_params["pebble_accretion"]:
-                                Mdot_pebble[count].append(planet_model._peb_acc.computeMdot(planet.R, planet.M))
-                            
+                                Mdot_pebble[count].append(planet_model._peb_acc.computeMdot(planet.R, planet.M) * yr)
+                                M_iso_pebble[count].append(planet_model._peb_acc.M_iso(planet.R))
+
                             if planet_params["migrate"]:
-                                Mdot_migration[count].append(planet_model._pl_acc.computeMdotMigration(planet.R, planet.M, planet_model._migrate.migration_rate(planet.R, planet.M)))
+                                Mdot_migration[count].append(planet_model._pl_acc.computeMdotMigration(planet.R, planet.M, planet_model._migrate.migration_rate(planet.R, planet.M)) * yr)
 
                             if planet_params["gas_accretion"]:
-                                Mdot_gas[count].append(planet_model._gas_acc.computeMdot(planet.R, planet.M_core, planet.M_env))
+                                Mdot_gas[count].append(planet_model._gas_acc.computeMdot(planet.R, planet.M_core, planet.M_env) * yr)
 
                             if chemistry_params["on"]:
                                 for count2, chem in enumerate(planet.X_core):
                                     X_cores[count][count2].append(chem)
                                     X_envs[count][count2].append(planet.X_env[count2])
-                    
-            time_keeper.append(t / (2 * np.pi))
 
             data["R"].append(grid.Rc.copy().tolist())
             data["Sigma_G"].append(disc.Sigma_G.copy().tolist())
@@ -880,14 +900,37 @@ def run_model(config):
             if planetesimal_params['active']:
                 data["Sigma_planetesimals"].append(disc.Sigma_D[2].copy().tolist())
                 data["St_planetesimals"].append(stokes[2].tolist())
+
                 data["e_planetesimals"].append(disc._planetesimal.e.copy().tolist())
                 data["i_planetesimals"].append(disc._planetesimal.i.copy().tolist())
+
+                data["de2_dt"].append((disc._planetesimal.de2_dt(disc._planetesimal._e2, disc._planetesimal._i2) * yr).copy().tolist())
+                data["di2_dt"].append((disc._planetesimal.di2_dt(disc._planetesimal._e2, disc._planetesimal._i2) * yr).copy().tolist())
+
+                data["de2_dt_drag"].append((disc._planetesimal.de2_dt_drag(disc._planetesimal._e2, disc._planetesimal._i2) * yr).copy().tolist())
+                data["di2_dt_drag"].append((disc._planetesimal.di2_dt_drag(disc._planetesimal._e2, disc._planetesimal._i2) * yr).copy().tolist())
+                data["de2_dt_VS_embryo"].append((disc._planetesimal.de2_dt_VS_embryo(disc._planetesimal._e2, disc._planetesimal._i2) * yr).copy().tolist())
+                data["di2_dt_VS_embryo"].append((disc._planetesimal.di2_dt_VS_embryo(disc._planetesimal._e2, disc._planetesimal._i2) * yr).copy().tolist())
+                data["de2_dt_VS_pltsml"].append((disc._planetesimal.de2_dt_VS_pltsml(disc._planetesimal._e2, disc._planetesimal._i2) * yr).copy().tolist())
+                data["di2_dt_VS_pltsml"].append((disc._planetesimal.di2_dt_VS_pltsml(disc._planetesimal._e2, disc._planetesimal._i2) * yr).copy().tolist())
+                data["de2_dt_DF"].append((disc._planetesimal.de2_dt_DF(disc._planetesimal._e2, disc._planetesimal._i2) * yr).copy().tolist())
+                data["di2_dt_DF"].append((disc._planetesimal.di2_dt_DF(disc._planetesimal._e2, disc._planetesimal._i2) * yr).copy().tolist())
 
             else:
                 data["Sigma_planetesimals"].append([])
                 data["St_planetesimals"].append([])
+
                 data["e_planetesimals"].append([])
                 data["i_planetesimals"].append([])
+
+                data["de2_dt"].append([])
+                data["di2_dt"].append([])
+                data["de2_dt_VS_embryo"].append([])
+                data["di2_dt_VS_embryo"].append([])
+                data["de2_dt_VS_pltsml"].append([])
+                data["di2_dt_VS_pltsml"].append([])
+                data["de2_dt_DF"].append([])
+                data["di2_dt_DF"].append([])
 
             data["T"].append(disc.T.copy().tolist())
 
@@ -1012,6 +1055,8 @@ def run_model(config):
             data["Mdot_pebble"] = Mdot_pebble
             data["Mdot_migration"] = Mdot_migration
             data["Mdot_gas"] = Mdot_gas
+            data["M_iso_planetesimal"] = M_iso_planetesimal
+            data["M_iso_pebble"] = M_iso_pebble
             data["X_cores"] = X_cores
             data["X_envs"] = X_envs
 
@@ -1021,6 +1066,7 @@ def run_model(config):
         data["Tc"] = Tc
         data["Sigc"] = Sigc
         data["alpha_SS"] = alpha_SS
+
         # data["R"] = grid.Rc.tolist()
         # data["Sigma_G"] = disc.Sigma_G.tolist()
         # data["Sigma_dust"] = disc.Sigma_D[0].tolist()
@@ -1031,6 +1077,18 @@ def run_model(config):
         # data["St_grains"] = disc.Stokes()[0].tolist()
         # data["St_pebbles"] = disc.Stokes()[1].tolist()
         # data["St_planetesimals"] = disc.Stokes()[2].tolist()
+        # data["e_planetesimals"] = disc._planetesimal.e.tolist()
+        # data["i_planetesimals"] = disc._planetesimal.i.tolist()
+        # data["de2_dt"] = (disc._planetesimal.de2_dt(disc._planetesimal._e2, disc._planetesimal._i2) * yr).tolist()
+        # data["di2_dt"] = (disc._planetesimal.di2_dt(disc._planetesimal._e2, disc._planetesimal._i2) * yr).tolist()
+        # data["de2_dt_drag"] = (disc._planetesimal.de2_dt_drag(disc._planetesimal._e2, disc._planetesimal._i2) * yr).tolist()
+        # data["di2_dt_drag"] = (disc._planetesimal.di2_dt_drag(disc._planetesimal._e2, disc._planetesimal._i2) * yr).tolist()
+        # data["de2_dt_VS_embryo"] = (disc._planetesimal.de2_dt_VS_embryo(disc._planetesimal._e2, disc._planetesimal._i2) * yr).tolist()
+        # data["di2_dt_VS_embryo"] = (disc._planetesimal.di2_dt_VS_embryo(disc._planetesimal._e2, disc._planetesimal._i2) * yr).tolist()
+        # data["de2_dt_VS_pltsml"] = (disc._planetesimal.de2_dt_VS_pltsml(disc._planetesimal._e2, disc._planetesimal._i2) * yr).tolist()
+        # data["di2_dt_VS_pltsml"] = (disc._planetesimal.di2_dt_VS_pltsml(disc._planetesimal._e2, disc._planetesimal._i2) * yr).tolist()
+        # data["de2_dt_DF"] = (disc._planetesimal.de2_dt_DF(disc._planetesimal._e2, disc._planetesimal._i2) * yr).tolist()
+        # data["di2_dt_DF"] = (disc._planetesimal.di2_dt_DF(disc._planetesimal._e2, disc._planetesimal._i2) * yr).tolist()
         # data["T"] = disc.T.tolist()
 
         if not wind_params["on"]:
@@ -1057,7 +1115,7 @@ def run_model(config):
 
 if __name__ == "__main__":
     ## Load config parameters from JSON file
-    config_path = "/Users/ben/Downloads/Planet Formation/DiscEvolution Simulations/Config/20260720_disc_evolution_test.json"
+    config_path = "/Users/ben/Downloads/Planet Formation/DiscEvolution Simulations/Config/20260728_full_test.json"
 
     if not os.path.exists(config_path):
         print(f"Error: config file not found: {config_path}", file = sys.stderr)
