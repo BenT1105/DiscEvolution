@@ -10,7 +10,7 @@ import matplotlib.cm as cm
 from cycler import cycler
 
 ## Add the path to the DiscEvolution directory
-sys.path.append('/Users/ben/Downloads/Planet Formation/Code/DiscEvolution Core Accretion/DiscEvolution')
+sys.path.append('/Users/ben/Downloads/Planet Formation/Code/DiscEvolution Core Accretion')
 
 ## import DiscEvolution modules
 from DiscEvolution.constants import *
