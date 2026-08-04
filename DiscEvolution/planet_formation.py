@@ -400,13 +400,13 @@ class PlanetesimalAccretion(object):
 
     args:
         disc: disc object
-        oligarchic_model: model to use for oligarchic growth
-        runaway_model: model to use for runaway growth
         gamma: turbulent stirring factor for planetesimal eccentricity
         rho_p: internal density of planetesimals
+        Mdot_migrate: function to compute accretion rate during migration
+        Mdot_insitu: function to compute accretion rate in-situ
     """
 
-    def __init__(self, disc, oligarchic_model = None, runaway_model = None, gamma = None, rho_p = 2.):
+    def __init__(self, disc, Mdot_migrate = True, Mdot_insitu = True, gamma = None, rho_p = 2.):
 
         if gamma is None:
             self._stirring = np.sqrt(disc.alpha)*disc.h
@@ -417,8 +417,8 @@ class PlanetesimalAccretion(object):
         
         self._rho_p = rho_p
         self.dRdt = None
-        self._olig_model = oligarchic_model
-        self._run_model = runaway_model
+        self._Mdot_migrate = Mdot_migrate
+        self._Mdot_insitu = Mdot_insitu
 
     def set_disc(self, disc):
         self._disc = disc
@@ -857,6 +857,7 @@ class PlanetesimalAccretion(object):
         return Mdot
     
     # Old core accretion model
+    # Untested and has been superseded by the Fortier et al (2013) model
 
     def eq_eccentricity_kokubo(self, Rp, Mp, b_tilde = 10):
         """
@@ -1034,11 +1035,10 @@ class PlanetesimalAccretion(object):
         if dRdt is None:
             dRdt = np.zeros_like(Rp)
         
-        if any(dRdt != 0):
+        if any(dRdt != 0) and self._Mdot_migrate:
             Mdot = self.computeMdotMigration(Rp, Mp, dRdt, M_Z = M_Z, M_HHe = M_HHe, time = time)
         
-        else:
-            #Mdot = self.computeMdotTwoPhase(Rp, Mp)
+        elif self._Mdot_insitu:
             Mdot = self.computeMdotFortier(Rp, Mp)
 
         return Mdot 
@@ -1313,9 +1313,8 @@ class PlanetMigration(object):
         Me = Mp*Mearth/Msun
         q = Me / star.M
         rH = star.r_Hill(Rp, Mp)
-        nu = disc.interp(Rp, disc.nu) * (1 + disc._gas._psi)
-        # For testing
-        #nu = disc.interp(Rp, disc.nu)
+        #nu = disc.interp(Rp, disc.nu) * (1 + disc._gas._psi)
+        nu = disc.interp(Rp, disc.nu)
 
         H  = disc.interp(Rp, disc.H)
 
@@ -1350,15 +1349,14 @@ class Bitsch2015Model(object):
         pb_gas_f : fraction of pebble accretion rate that arrives as gas, default=0.1
         migrate  : Whether to include migration, default=True
         pebble_acc : Whether to include pebble accretion, default = True
-        planetesimal_acc : Whether to include planetesimal accretion, default=False
-        oligarchic_model: model to use for oligarchic growth
-        runaway_model: model to use for runaway growth
+        planetesimal_acc_migrate: function to compute accretion rate during migration, default=True
+        planetesimal_acc_insitu: function to compute accretion rate in-situ, default=True
         gas_acc: model for gas accretion
         winds    : Whether the disk includes disk winds, default=False
         **kwargs : arguments passed to GasAccretion object
     """
 
-    def __init__(self, disc, pb_gas_f = 0.1, migrate = True, pebble_acc = True, planetesimal_acc = False, oligarchic_model = None, runaway_model = None, gas_acc = True, winds = False, **kwargs):
+    def __init__(self, disc, pb_gas_f = 0.1, migrate = True, pebble_acc = True, planetesimal_acc_migrate = True, planetesimal_acc_insitu = True, gas_acc = True, winds = False, **kwargs):
 
         self._f_gas = pb_gas_f
         self._disc = disc
@@ -1371,13 +1369,13 @@ class Bitsch2015Model(object):
         if pebble_acc:
             self._peb_acc = PebbleAccretion(disc)
 
-        self._pl_acc = None
-        if planetesimal_acc:
-            self._pl_acc = PlanetesimalAccretion(disc, oligarchic_model, runaway_model)
+        self._pla_acc = None
+        if planetesimal_acc_migrate or planetesimal_acc_insitu:
+            self._pla_acc = PlanetesimalAccretion(disc, Mdot_migrate = planetesimal_acc_migrate, Mdot_insitu = planetesimal_acc_insitu)
 
         self._migrate = None
         if migrate:
-            self._migrate = PlanetMigration(disc, winds=winds)
+            self._migrate = PlanetMigration(disc, winds = winds)
 
     def ASCII_header(self):
         """header"""
@@ -1411,9 +1409,9 @@ class Bitsch2015Model(object):
 
         if self._peb_acc:
             self._peb_acc.set_disc(disc)
-        
-        if self._pl_acc:
-            self._pl_acc.set_disc(disc)
+
+        if self._pla_acc:
+            self._pla_acc.set_disc(disc)
 
         if self._migrate:
             self._migrate.set_disc(disc)
@@ -1426,8 +1424,8 @@ class Bitsch2015Model(object):
             self._gas_acc.update()
         if self._peb_acc:
             self._peb_acc.update()
-        if self._pl_acc:
-            self._pl_acc.update()
+        if self._pla_acc:
+            self._pla_acc.update()
         if self._migrate:
             self._migrate.update()
 
@@ -1582,8 +1580,9 @@ class Bitsch2015Model(object):
         Xs_pla = []
 
         for spec in chem:
-            if self._pl_acc:
+            if self._pla_acc:
                 Xs_pla.append(disc.interp(R_p, disc._planetesimal.ice_abund[spec]) / np.maximum(disc.interp(R_p, disc.dust_frac[2]), 1e-300))
+
             else:
                 Xs_pla = np.zeros_like(R_p)
 
@@ -1643,8 +1642,8 @@ class Bitsch2015Model(object):
 
             # Compute the mass accretion rate due to planetesimal accretion
             Mdot_pla = np.zeros_like(R_p)
-            if self._pl_acc:
-                Mdot_pla = self._pl_acc.computeMdot(R_p, M_core + M_env, Rdot)
+            if self._pla_acc:
+                Mdot_pla = self._pla_acc.computeMdot(R_p, M_core + M_env, Rdot)
 
             accreted = R_p <= Rmin
             Rdot[accreted] = Mcdot[accreted] = Medot[accreted] = 0
