@@ -90,7 +90,7 @@ class StarBase(object):
     def age(self):
         """Stellar age"""
         return self._age
-    
+
     @property
     def L(self):
         """Stellar luminosity in erg/s"""
@@ -148,7 +148,6 @@ class SimpleStar(StarBase):
                                      "known".format(key))
         return SimpleStar(**kwargs)
 
-                        
 # A star with a photoevaporating luminosity
 class PhotoStar(SimpleStar):
     def __init__(self, LX=1e30, Phi=0, **kwargs):

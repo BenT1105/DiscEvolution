@@ -256,7 +256,7 @@ class ViscousEvolutionFV(object):
         self._init_fluxes(disc)
 
         if S is None:
-            S = disc.Sigma 
+            S = disc.Sigma
         return - 2.0 * self._dS[1:-1] / (S[1:] + S[:-1])
         # For consistency with previous runs.
         #return - 0.5 * self._dS[1:-1] / (S[1:] + S[:-1])
@@ -450,6 +450,8 @@ class HybridWindModel(object):
         if S is None:
             S = disc.Sigma 
         return - 2.0 * (self._f_visc + self._f_wind)[1:-1] / (S[1:] + S[:-1])
+        # For consistency with previous runs.
+        #return - 0.5 * (self._f_visc + self._f_wind)[1:-1] / (S[1:] + S[:-1])
 
     def _fluxes(self):
         """Compute the mass fluxes and loss term """

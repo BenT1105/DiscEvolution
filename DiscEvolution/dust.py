@@ -1,4 +1,4 @@
- # dust.py
+# dust.py
 #
 # Author: R. Booth
 # Date : 10 - Nov - 2016
@@ -21,20 +21,23 @@ from scipy.optimize import least_squares
 
 class DustyDisc(AccretionDisc):
     """
-    Dusty accretion disc. Base class for an accretion disc that also includes one or more dust species.
+    Dusty accretion disc. Base class for an accretion disc that also
+    includes one or more dust species.
 
     args:
         grid     : Disc gridding object
         star     : Stellar object
         eos      : Equation of state
         Sigma    : Initial surface density distribution
-        rho_s    : solid density, default=2
+        rho_s    : solid density, default=1
         Sc       : Schmidt number, default=1
-        feedback : When False, the dust mass is considered to be a negligible fraction of the total mass.
-        grain_size : Grain size in cm (vector of dust population grain sizes) - for Planetesimals, grain size should be initialized to [0,0,100km]
+        feedback : When False, the dust mass is considered to be a negligible
+                   fraction of the total mass.
+        grain_size : Grain size in cm (vector of dust population grain sizes)
+            - for Planetesimals, grain size should be initialized to [0,0,100km]
     """
 
-    def __init__(self, grid, star, eos, Sigma=None, rho_s=2., Sc=1.,
+    def __init__(self, grid, star, eos, Sigma=None, rho_s=1., Sc=1.,
                  feedback=True, grain_size=None):
 
         super(DustyDisc, self).__init__(grid, star, eos, Sigma)
@@ -179,11 +182,11 @@ class DustyDisc(AccretionDisc):
     @property
     def R_planetesimal(self):
         return self._R_planetesimal
-    
+
     @property
     def M_planetesimal(self):
         return self._M_planetesimal
-    
+
     @property
     def mfp_H2(self):
         """Mean free path of H2 molecules in cm."""
@@ -250,7 +253,7 @@ class DustyDisc(AccretionDisc):
 
 class FixedSizeDust(DustyDisc):
     """
-    Simple model for dust of a fixed size.
+    Simple model for dust of a fixed size
 
     args:
         grid     : Disc gridding object
@@ -259,11 +262,12 @@ class FixedSizeDust(DustyDisc):
         eps      : Initial dust fraction (must broadcast to [size.shape, Ncell])
         size     : size, cm (float or 1-d array of sizes)
         Sigma    : Initial surface density distribution
-        rho_s     : solid density, default=2 g / cm^3
+        rho_s    : solid density, default=1 g / cm^3
         Schmidt  : Schmidt number, default=1
         feedback : default=True
     """
-    def __init__(self, grid, star, eos, eps, size, Sigma=None, rho_s=2,
+
+    def __init__(self, grid, star, eos, eps, size, Sigma=None, rho_s=1,
                  Schmidt=1.0, feedback=True):
 
         super(FixedSizeDust, self).__init__(
@@ -286,7 +290,8 @@ class DustGrowthTwoPop(DustyDisc):
     particles we solve their growth up to the most stringent limit set by
     radial drift and fragmentation.
 
-    Any dust tracers are assumed to have the same mass distribution as the dust particles themselves.
+    Any dust tracers are assumed to have the same mass distribution as the dust
+    particles themselves.
 
     args:
         grid      : Disc gridding object
@@ -294,7 +299,7 @@ class DustGrowthTwoPop(DustyDisc):
         eos       : Equation of state
         eps       : Initital dust fraction
         Sigma     : Initial surface density distribution
-        rho_s     : solid density, default=2
+        rho_s     : solid density, default=1
         Sc        : Schmidt number, default=1
         uf_0      : Fragmentation velocity (default = 100 (cm/s))
         uf_ice    : Fragmentation velocity of icy grains (default = 1000 (cm/s))
@@ -310,11 +315,12 @@ class DustGrowthTwoPop(DustyDisc):
         distribution_slope: The slope d ln n(a) / d ln a of the number distribution with size (3.5 for MRN)
         transition_factor: Factor controlling width of smooth transition between frag/drift regimes (default=2)
     """
+
     def __init__(self, grid, star, eos, eps, Sigma=None,
-                 rho_s=2., Sc=1., uf_0=100., uf_ice=1e3, f_ice=1, thresh=0.1,
+                 rho_s=1., Sc=1., uf_0=100., uf_ice=1e3, f_ice=1, thresh=0.1,
                  f_grow=1.0, a0=1e-5, amin=1e-5, f_drift=0.55, f_frag=0.37, feedback=True,
                  start_small=True, distribution_slope=3.5, gas=None, transition_factor=2.0):
-        
+
         super(DustGrowthTwoPop, self).__init__(grid, star, eos, Sigma, rho_s, Sc, feedback)
         
         self._uf_0   = uf_0 / (AU * Omega0)
@@ -409,9 +415,10 @@ class DustGrowthTwoPop(DustyDisc):
         gamma[-1]   = abs((P[-1] - P[ -2])/(R[-1] - R[-2]))
         gamma *= R/(P+1e-300)
         return gamma
-    
+
     def _gammaP_smooth(self):
-        """Dimensionless pressure gradient using Savitzky-Golay filtering.
+        """
+        Dimensionless pressure gradient using Savitzky-Golay filtering.
         
         Applies polynomial smoothing to the pressure profile before computing
         the derivative. This preserves broad features while filtering noise.
@@ -452,7 +459,7 @@ class DustGrowthTwoPop(DustyDisc):
     def _t_grow(self, eps=None):
         # Booth:
         #return 1 / (self.Omega_k * eps)
-        "Slightly more realistic growth time-scale from Drazkowska et. al (2021)."
+        # Slightly more realistic growth time-scale from Drazkowska et. al (2021).
         Sigma_dust=self.Sigma_D[0]+self.Sigma_D[1]
         return (self.Sigma_G/((Sigma_dust+1.e-300)*self._star.Omega_k(self._grid.Rc))) * (self._eos._alpha_t/1e-4)**(-1/3) * (self.grid.Rc)**(1/3) 
 
@@ -470,7 +477,6 @@ class DustGrowthTwoPop(DustyDisc):
         afrag = np.minimum(afrag_t, afrag_d)
         a0    = np.minimum(afrag, adrift)       # a0 is the lower of the maximum sizes
    
-
         # Update the particle distribution
         #   Maximum size due to growth:
         if self._start_small:
@@ -573,7 +579,7 @@ class PlanetesimalFormation(object):
         If planetesimals are being included, pass disc._planetesimal = PlanetesimalFormation(...) after setting up the disc class.
     """
 
-    def __init__(self, disc, planets = None, d_planetesimal = 100, rho_s = 2.,
+    def __init__(self, disc, planets = None, d_planetesimal = 100, rho_s = 1.,
                  St_min = 0.001, St_max = 10.0, trap_lifetime = 100, pla_eff = 0.1,
                  drag = True, VS_embryo = True, VS_pltsml = True, DF = True,
                  e_init = 'eq', i_init = 'eq'):
@@ -652,6 +658,8 @@ class PlanetesimalFormation(object):
 
         else:
             self._i2 = np.full_like(disc.R, i_init ** 2, dtype = float)
+
+    # Initial conditions for planetesimal formation
 
     def M_birth(self, disc):
         """
@@ -1356,14 +1364,13 @@ class PlanetesimalFormation(object):
         }
         return self.__class__.__name__, head
 
-
-        
 ################################################################################
 # Radial drift
 ################################################################################
 
 class SingleFluidDrift(object):
-    """Radial Drift in the single fluid approximation with the short friction
+    """
+    Radial Drift in the single fluid approximation with the short friction
     time limit.
 
     This class computes the single-fluid update of the dust fraction,
@@ -1385,6 +1392,7 @@ class SingleFluidDrift(object):
         settling  : Include settling in the velocity calculation, default=False
         van_leer  : Use 2nd-order Van-Leer reconstruction, default=False
     """
+
     def __init__(self, diffusion=None, settling=False, van_leer=False):
         self._diffuse = diffusion
         self._settling = settling
@@ -1502,7 +1510,8 @@ class SingleFluidDrift(object):
         return deps
 
     def _compute_deltaV(self, disc, v_visc=None, average=True):
-        """Compute the total dust-to-gas velocity
+        """
+        Compute the total dust-to-gas velocity
 
         Args:
             disc (Disc): The disc object containing the necessary parameters.
@@ -1612,7 +1621,9 @@ class SingleFluidDrift(object):
         sink_term_1 = (pla_eff / (d * AU)) * M_flux[1] / (2 * np.pi * disc.R * AU) * disc.is_critical[1]
 
         # Convert to dust fraction when returning
-        return sink_term_0 / Sigma, sink_term_1 / Sigma
+        tiny = np.finfo(Sigma.dtype).tiny
+        Sigma_safe = np.maximum(Sigma, tiny)
+        return sink_term_0 / Sigma_safe, sink_term_1 / Sigma_safe
     
     def __call__(self, dt, disc, gas_tracers=None, dust_tracers=None, v_visc=None):
         """Apply the update for radial drift over time-step dt"""
@@ -1664,7 +1675,10 @@ class SingleFluidDrift(object):
             if disc._planetesimal.ice_abund and (dust_tracers is not None):
                 # Find fraction of each dust species
                 tracer_total = dust_tracers.sum(axis=0)
-                species_frac = dust_tracers/tracer_total
+                tiny = np.finfo(dust_tracers.dtype).tiny
+                tracer_total_safe = np.maximum(tracer_total, tiny)
+                species_frac = dust_tracers / tracer_total_safe
+                species_frac[:, tracer_total <= tiny] = 0.0
 
                 # Apply change in species dust fraction to dust tracers
                 dust_tracers[:] -= species_frac * (L0*dt + L1*dt)
@@ -1711,13 +1725,14 @@ class SingleFluidDrift(object):
             If ret_vphi is True, also returns:
                 DeltaVphi: Azimuthal velocity in AU per code time unit.
         """
+
         DeltaV = self._compute_deltaV(disc, v_visc)
         
         if ret_vphi:
             return DeltaV - self._epsDeltaV, self._DeltaVphi
         else:
             return DeltaV - self._epsDeltaV
-        
+
 
 
 if __name__ == "__main__":
