@@ -4,31 +4,24 @@ A python code to model the evolution of dust and gas in protoplanetary discs.
 Original Author: Richard Booth
 This version modified by: Michael Balogh and Ben Tobin
 
-This code contains a set of modules to simulate the viscous evolution of protoplanetary discs over Myr
-time scales. This includes modules to compute the viscous evolution, grain growth, radial drift,
-thermal structure, transport of volatiles and planet formation. 
+This code contains a set of modules to simulate the viscous evolution of protoplanetary discs over Myr time scales. This includes modules to compute the viscous evolution, grain growth, radial drift, thermal structure, transport of volatiles and planet formation. 
 
 The planet formation module has been updated to include core growth via planetesimal accretion following the model described in Fortier et al. (2013) and Kaufmann & Alibert (2023).
 
 The script used to run models is provided in scripts/ and a notebook used to generate figures is in notebooks/.
 
-The original code was originally described in [Booth et al. (2017)](https://arxiv.org/abs/1705.03305). If you use this code in your research, please cite this paper along with any supporting papers describing
-additional modules that you use. 
+The original code was originally described in [Booth et al. (2017)](https://arxiv.org/abs/1705.03305). If you use this code in your research, please cite this paper along with any supporting papers describing additional modules that you use. 
 
 
 ## License
 Copyright 2017-2019 Richard Booth
 
-This code is free software made available under the GNU GPLv3 License. For details see the LICENSE
-file.
+This code is free software made available under the GNU GPLv3 License. For details see the LICENSE file.
 
 
 ## Docs
-
-The code is not intended to be used as a stand alone tool, but includes a set of different modules 
-that can be used to include different physics when modelling the evolution of protoplanetary discs.
-As such, it contains a series of classes each of which handle one aspect of the disc's evolution, 
-such as viscous evolution or grain growth.
+The code is not intended to be used as a stand alone tool, but includes a set of different modules that can be used to include different physics when modelling the evolution of protoplanetary discs.
+As such, it contains a series of classes each of which handle one aspect of the disc's evolution, such as viscous evolution or grain growth.
 
 In addition to the physics, there are a number of core classes upon which the physics modules are built.
 
