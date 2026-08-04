@@ -568,7 +568,8 @@ def run_model(config):
             migrate = planet_params["migrate"], 
             pebble_acc = planet_params["pebble_accretion"],
             gas_acc = planet_params["gas_accretion"],
-            planetesimal_acc = planet_params["planetesimal_accretion"],
+            planetesimal_acc_migrate = planet_params["planetesimal_accretion_migrate"],
+            planetesimal_acc_insitu = planet_params["planetesimal_accretion_insitu"],
             winds = wind_params["on"])
         
         planet_model.set_disc(disc)
@@ -605,6 +606,9 @@ def run_model(config):
             if chemistry_params["on"]:
                 X_cores.append([[] for num in range(0, Nchem, 1)]) 
                 X_envs.append([[] for num in range(0, Nchem, 1)])
+
+    else:
+        planets = None
         
     time_keeper = []
     disk_Mdot_star, disk_Mass, Tc, Sigc = [], [], [], []
@@ -615,33 +619,18 @@ def run_model(config):
 
     disc._planetesimal = None
     if planetesimal_params['active']:
-        if planet_params['include_planets']:
-            disc._planetesimal = PlanetesimalFormation(
-                disc, planets,
-                d_planetesimal = planetesimal_params['diameter'],
-                St_min = planetesimal_params['St_min'], 
-                St_max = planetesimal_params['St_max'], 
-                pla_eff = planetesimal_params['pla_eff'],
-                drag = planetesimal_params['drag'], 
-                VS_embryo = planetesimal_params['VS_embryo'],
-                VS_pltsml = planetesimal_params['VS_pltsml'],
-                DF = planetesimal_params['DF'],
-                e_init = planetesimal_params['e_init'], 
-                i_init = planetesimal_params['i_init'])
-        
-        else:
-            disc._planetesimal = PlanetesimalFormation(
-                disc, None,
-                d_planetesimal = planetesimal_params['diameter'],
-                St_min = planetesimal_params['St_min'], 
-                St_max = planetesimal_params['St_max'], 
-                pla_eff = planetesimal_params['pla_eff'],
-                drag = planetesimal_params['drag'], 
-                VS_embryo = planetesimal_params['VS_embryo'],
-                VS_pltsml = planetesimal_params['VS_pltsml'],
-                DF = planetesimal_params['DF'],
-                e_init = planetesimal_params['e_init'], 
-                i_init = planetesimal_params['i_init'])
+        disc._planetesimal = PlanetesimalFormation(
+            disc, planets,
+            d_planetesimal = planetesimal_params['diameter'],
+            St_min = planetesimal_params['St_min'], 
+            St_max = planetesimal_params['St_max'], 
+            pla_eff = planetesimal_params['pla_eff'],
+            drag = planetesimal_params['drag'], 
+            VS_embryo = planetesimal_params['VS_embryo'],
+            VS_pltsml = planetesimal_params['VS_pltsml'],
+            DF = planetesimal_params['DF'],
+            e_init = planetesimal_params['e_init'], 
+            i_init = planetesimal_params['i_init'])
         
     ## ----------------
     ## First data point
@@ -662,16 +651,16 @@ def run_model(config):
             disk_Mdot_p[count].append(np.interp(planet.R,grid.Rc[0:-1], disk_Mdot))
             # Mdot_tracker[count].append(planet_model._peb_acc.computeMdot(planet.R, planet.M))
 
-            if planet_params["planetesimal_accretion"]:
-                Mdot_planetesimal[count].append(planet_model._pl_acc.computeMdotFortier(planet.R, planet.M) * yr)
-                M_iso_planetesimal[count].append(planet_model._pl_acc.M_iso_pltsml(planet.R))
+            if planet_params["planetesimal_accretion_insitu"]:
+                Mdot_planetesimal[count].append(planet_model._pla_acc.computeMdotFortier(planet.R, planet.M) * yr)
+                M_iso_planetesimal[count].append(planet_model._pla_acc.M_iso_pltsml(planet.R))
 
             if planet_params["pebble_accretion"]:
                 Mdot_pebble[count].append(planet_model._peb_acc.computeMdot(planet.R, planet.M) * yr)
                 M_iso_pebble[count].append(planet_model._peb_acc.M_iso(planet.R))
 
-            if planet_params["migrate"]:
-                Mdot_migration[count].append(planet_model._pl_acc.computeMdotMigration(planet.R, planet.M, planet_model._migrate.migration_rate(planet.R, planet.M)) * yr)
+            if planet_params["migrate"] and planet_params["planetesimal_accretion_migrate"]:
+                Mdot_migration[count].append(planet_model._pla_acc.computeMdotMigration(planet.R, planet.M, planet_model._migrate.migration_rate(planet.R, planet.M)) * yr)
 
             if planet_params["gas_accretion"]:
                 Mdot_gas[count].append(planet_model._gas_acc.computeMdot(planet.R, planet.M_core, planet.M_env) * yr)
@@ -865,16 +854,16 @@ def run_model(config):
                             disk_Mdot_p[count].append(np.interp(planet.R, grid.Re[1:-1], disk_Mdot))
                             # Mdot_tracker[count].append(planet_model._peb_acc.computeMdot(planet.R, planet.M))
 
-                            if planet_params["planetesimal_accretion"]:
-                                Mdot_planetesimal[count].append(planet_model._pl_acc.computeMdotFortier(planet.R, planet.M) * yr)
-                                M_iso_planetesimal[count].append(planet_model._pl_acc.M_iso_pltsml(planet.R))
+                            if planet_params["planetesimal_accretion_insitu"]:
+                                Mdot_planetesimal[count].append(planet_model._pla_acc.computeMdotFortier(planet.R, planet.M) * yr)
+                                M_iso_planetesimal[count].append(planet_model._pla_acc.M_iso_pltsml(planet.R))
 
                             if planet_params["pebble_accretion"]:
                                 Mdot_pebble[count].append(planet_model._peb_acc.computeMdot(planet.R, planet.M) * yr)
                                 M_iso_pebble[count].append(planet_model._peb_acc.M_iso(planet.R))
 
-                            if planet_params["migrate"]:
-                                Mdot_migration[count].append(planet_model._pl_acc.computeMdotMigration(planet.R, planet.M, planet_model._migrate.migration_rate(planet.R, planet.M)) * yr)
+                            if planet_params["migrate"] and planet_params["planetesimal_accretion_migrate"]:
+                                Mdot_migration[count].append(planet_model._pla_acc.computeMdotMigration(planet.R, planet.M, planet_model._migrate.migration_rate(planet.R, planet.M)) * yr)
 
                             if planet_params["gas_accretion"]:
                                 Mdot_gas[count].append(planet_model._gas_acc.computeMdot(planet.R, planet.M_core, planet.M_env) * yr)
@@ -1115,7 +1104,7 @@ def run_model(config):
 
 if __name__ == "__main__":
     ## Load config parameters from JSON file
-    config_path = "/Users/ben/Downloads/Planet Formation/DiscEvolution Simulations/Config/20260728_full_test.json"
+    config_path = "/Users/ben/Downloads/Planet Formation/DiscEvolution Simulations/Config/20260804_balogh2026.json"
 
     if not os.path.exists(config_path):
         print(f"Error: config file not found: {config_path}", file = sys.stderr)
