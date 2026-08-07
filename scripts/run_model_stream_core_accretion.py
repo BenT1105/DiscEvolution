@@ -489,10 +489,11 @@ def run_model(config):
     ## --------------
 
     try:
-        disc = DustGrowthTwoPop(grid, star, eos, disc_params['d2g'], 
+        disc = DustGrowthTwoPop(grid, star, eos, disc_params['d2g'],
             Sigma = Sigma, feedback = dust_growth_params["feedback"], Sc = disc_params["Sc"],
             f_ice = dust_growth_params['f_ice'], thresh = dust_growth_params['thresh'],
-            uf_0 = dust_growth_params["uf_0"], uf_ice = dust_growth_params["uf_ice"], gas = gas)
+            uf_0 = dust_growth_params["uf_0"], uf_ice = dust_growth_params["uf_ice"], gas = gas,
+            rho_s = dust_growth_params['rho_s'])
         
     except Exception as e:
         # disc = DustGrowthTwoPop(grid, star, eos, disc_params['d2g'], Sigma = Sigma, f_ice = dust_growth_params['f_ice'], thresh = dust_growth_params['thresh'])
@@ -513,7 +514,7 @@ def run_model(config):
             chemistry = SimpleCOChemOberg()
 
         elif chemistry_params["chem_model"] == "Equilibrium":
-            chemistry = EquilibriumCOChemOberg(a = 1e-5)
+            chemistry = EquilibriumCOChemOberg(a = 1e-5, fix_ratios = True)
 
         elif chemistry_params["chem_model"] == "TimeDep":
             chemistry = TimeDepCOChemOberg(a = 1e-5)
@@ -561,19 +562,21 @@ def run_model(config):
             planets = Planets(Nchem = 0)
         
         planet_model = Bitsch2015Model(
-            disc, 
-            pb_gas_f = planet_params["pb_gas_f"], 
-            migrate = planet_params["migrate"], 
+            disc,
+            pb_gas_f = planet_params["pb_gas_f"],
+            migrate = planet_params["migrate"],
             pebble_acc = planet_params["pebble_accretion"],
             gas_acc = planet_params["gas_accretion"],
-            planetesimal_acc = planet_params["planetesimal_accretion"],
-            winds = wind_params["on"])
-        
+            planetesimal_acc_migrate = planet_params["planetesimal_accretion_migrate"],
+            planetesimal_acc_insitu = planet_params["planetesimal_accretion_insitu"],
+            winds = wind_params["on"],
+            rho_core = planet_params["rho_core"],)
+
         planet_model.set_disc(disc)
 
         Mp = planet_params['Mp']
         Rp = planet_params['Rp']
-        
+
         for i in range(len(Rp)):
             t_impl = planet_params["implant_time"][i]
             R_impl = Rp[i]
@@ -581,39 +584,28 @@ def run_model(config):
 
             planet_model.insert_new_planet(t_impl, R_impl, M_impl, planets)
 
+    else:
+        planets = None
+
     ## --------------------
     ## Set up planetesimals
     ## --------------------
 
     disc._planetesimal = None
     if planetesimal_params['active']:
-        if planet_params['include_planets']:
-            disc._planetesimal = PlanetesimalFormation(
-                disc, planets,
-                d_planetesimal = planetesimal_params['diameter'],
-                St_min = planetesimal_params['St_min'], 
-                St_max = planetesimal_params['St_max'], 
-                pla_eff = planetesimal_params['pla_eff'],
-                drag = planetesimal_params['drag'], 
-                VS_embryo = planetesimal_params['VS_embryo'],
-                VS_pltsml = planetesimal_params['VS_pltsml'],
-                DF = planetesimal_params['DF'],
-                e_init = planetesimal_params['e_init'], 
-                i_init = planetesimal_params['i_init'])
-        
-        else:
-            disc._planetesimal = PlanetesimalFormation(
-                disc, None,
-                d_planetesimal = planetesimal_params['diameter'],
-                St_min = planetesimal_params['St_min'], 
-                St_max = planetesimal_params['St_max'], 
-                pla_eff = planetesimal_params['pla_eff'],
-                drag = planetesimal_params['drag'], 
-                VS_embryo = planetesimal_params['VS_embryo'],
-                VS_pltsml = planetesimal_params['VS_pltsml'],
-                DF = planetesimal_params['DF'],
-                e_init = planetesimal_params['e_init'], 
-                i_init = planetesimal_params['i_init'])
+        disc._planetesimal = PlanetesimalFormation(
+            disc, planets,
+            d_planetesimal = planetesimal_params['diameter'],
+            rho_pltsml = planetesimal_params['rho_pltsml'],
+            St_min = planetesimal_params['St_min'],
+            St_max = planetesimal_params['St_max'],
+            pla_eff = planetesimal_params['pla_eff'],
+            drag = planetesimal_params['drag'],
+            VS_embryo = planetesimal_params['VS_embryo'],
+            VS_pltsml = planetesimal_params['VS_pltsml'],
+            DF = planetesimal_params['DF'],
+            e_init = planetesimal_params['e_init'],
+            i_init = planetesimal_params['i_init'])
 
     ## --------------------------
     ## Run model (HDF5 streaming)
@@ -657,13 +649,15 @@ def run_model(config):
                 grp_Rp = h5f.create_group("Rp")
                 grp_Mdotp = h5f.create_group("disk_Mdot_p")
 
-                if planet_params["planetesimal_accretion"]:
+                if planet_params["planetesimal_accretion_insitu"]:
                     grp_Mdot_pltsml = h5f.create_group("Mdot_planetesimal")
+                    grp_Miso_pltsml = h5f.create_group("M_iso_planetesimal")
 
                 if planet_params["pebble_accretion"]:
                     grp_Mdot_peb = h5f.create_group("Mdot_pebble")
+                    grp_Miso_peb = h5f.create_group("M_iso_pebble")
 
-                if planet_params["migrate"]:
+                if planet_params["migrate"] and planet_params["planetesimal_accretion_migrate"]:
                     grp_Mdot_mig = h5f.create_group("Mdot_migration")
 
                 if planet_params["gas_accretion"]:
@@ -681,13 +675,15 @@ def run_model(config):
                     grp_Rp.create_dataset(str(ip), shape = (0,), maxshape = (None,), dtype = "f8", chunks = (1024,))
                     grp_Mdotp.create_dataset(str(ip), shape = (0,), maxshape = (None,), dtype = "f8", chunks = (1024,))
 
-                    if planet_params["planetesimal_accretion"]:
+                    if planet_params["planetesimal_accretion_insitu"]:
                         grp_Mdot_pltsml.create_dataset(str(ip), shape = (0,), maxshape = (None,), dtype = "f8", chunks = (1024,))
+                        grp_Miso_pltsml.create_dataset(str(ip), shape = (0,), maxshape = (None,), dtype = "f8", chunks = (1024,))
 
                     if planet_params["pebble_accretion"]:
                         grp_Mdot_peb.create_dataset(str(ip), shape = (0,), maxshape = (None,), dtype = "f8", chunks = (1024,))
+                        grp_Miso_peb.create_dataset(str(ip), shape = (0,), maxshape = (None,), dtype = "f8", chunks = (1024,))
 
-                    if planet_params["migrate"]:
+                    if planet_params["migrate"] and planet_params["planetesimal_accretion_migrate"]:
                         grp_Mdot_mig.create_dataset(str(ip), shape = (0,), maxshape = (None,), dtype = "f8", chunks = (1024,))
 
                     if planet_params["gas_accretion"]:
@@ -724,6 +720,26 @@ def run_model(config):
                 h5f.create_dataset("e_planetesimals", shape = (0, nR), maxshape = (None, nR), dtype = "f8")
                 h5f.create_dataset("i_planetesimals", shape = (0, nR), maxshape = (None, nR), dtype = "f8")
 
+                if planetesimal_params['drag'] or planetesimal_params['VS_embryo'] or planetesimal_params['VS_pltsml'] or planetesimal_params['DF']:
+                    h5f.create_dataset("de2_dt", shape = (0, nR), maxshape = (None, nR), dtype = "f8")
+                    h5f.create_dataset("di2_dt", shape = (0, nR), maxshape = (None, nR), dtype = "f8")
+
+                if planetesimal_params['drag']:
+                    h5f.create_dataset("de2_dt_drag", shape = (0, nR), maxshape = (None, nR), dtype = "f8")
+                    h5f.create_dataset("di2_dt_drag", shape = (0, nR), maxshape = (None, nR), dtype = "f8")
+
+                if planetesimal_params['VS_embryo']:
+                    h5f.create_dataset("de2_dt_VS_embryo", shape = (0, nR), maxshape = (None, nR), dtype = "f8")
+                    h5f.create_dataset("di2_dt_VS_embryo", shape = (0, nR), maxshape = (None, nR), dtype = "f8")
+
+                if planetesimal_params['VS_pltsml']:
+                    h5f.create_dataset("de2_dt_VS_pltsml", shape = (0, nR), maxshape = (None, nR), dtype = "f8")
+                    h5f.create_dataset("di2_dt_VS_pltsml", shape = (0, nR), maxshape = (None, nR), dtype = "f8")
+
+                if planetesimal_params['DF']:
+                    h5f.create_dataset("de2_dt_DF", shape = (0, nR), maxshape = (None, nR), dtype = "f8")
+                    h5f.create_dataset("di2_dt_DF", shape = (0, nR), maxshape = (None, nR), dtype = "f8")
+
             ## Initial write at t = 0 (if not already included in tinterval)
             disk_v = disc._gas.viscous_velocity(disc, disc.Sigma)
             disk_Mdot = -2 * np.pi * disc._grid.Rc[0:-1] * disc.Sigma[0:-1] * disk_v * (AU * AU) * (yr / Msun)
@@ -752,25 +768,33 @@ def run_model(config):
                             d.resize(1, axis = 0)
                             d[0] = val
 
-                        if planet_params["planetesimal_accretion"]:
+                        if planet_params["planetesimal_accretion_insitu"]:
                             d = grp_Mdot_pltsml[str(ip)]
                             d.resize(1, axis = 0)
-                            d[0] = planet_model._pl_acc.computeMdotFortier(planet.R, planet.M)
+                            d[0] = planet_model._pla_acc.computeMdotFortier(planet.R, planet.M) * yr
+
+                            d = grp_Miso_pltsml[str(ip)]
+                            d.resize(1, axis = 0)
+                            d[0] = planet_model._pla_acc.M_iso_pltsml(planet.R)
 
                         if planet_params["pebble_accretion"]:
                             d = grp_Mdot_peb[str(ip)]
                             d.resize(1, axis = 0)
-                            d[0] = planet_model._peb_acc.computeMdot(planet.R, planet.M)
+                            d[0] = planet_model._peb_acc.computeMdot(planet.R, planet.M) * yr
 
-                        if planet_params["migrate"]:
+                            d = grp_Miso_peb[str(ip)]
+                            d.resize(1, axis = 0)
+                            d[0] = planet_model._peb_acc.M_iso(planet.R)
+
+                        if planet_params["migrate"] and planet_params["planetesimal_accretion_migrate"]:
                             d = grp_Mdot_mig[str(ip)]
                             d.resize(1, axis = 0)
-                            d[0] = planet_model._pl_acc.computeMdotMigration(planet.R, planet.M, planet_model._migrate.migration_rate(planet.R, planet.M))
+                            d[0] = planet_model._pla_acc.computeMdotMigration(planet.R, planet.M, planet_model._migrate.migration_rate(planet.R, planet.M)) * yr
 
                         if planet_params["gas_accretion"]:
                             d = grp_Mdot_gas[str(ip)]
                             d.resize(1, axis = 0)
-                            d[0] = planet_model._gas_acc.computeMdot(planet.R, planet.M_core, planet.M_env)
+                            d[0] = planet_model._gas_acc.computeMdot(planet.R, planet.M_core, planet.M_env) * yr
 
                         if chemistry_params["on"]:
                             for js, chem in enumerate(planet.X_core):
@@ -810,6 +834,31 @@ def run_model(config):
                         d = h5f[name]
                         d.resize(1, axis = 0)
                         d[0, :] = arr
+
+                    _e2, _i2 = disc._planetesimal._e2, disc._planetesimal._i2
+                    for name, active_flag, fn_e, fn_i in [
+                        ("drag", planetesimal_params['drag'], disc._planetesimal.de2_dt_drag, disc._planetesimal.di2_dt_drag),
+                        ("VS_embryo", planetesimal_params['VS_embryo'], disc._planetesimal.de2_dt_VS_embryo, disc._planetesimal.di2_dt_VS_embryo),
+                        ("VS_pltsml", planetesimal_params['VS_pltsml'], disc._planetesimal.de2_dt_VS_pltsml, disc._planetesimal.di2_dt_VS_pltsml),
+                        ("DF", planetesimal_params['DF'], disc._planetesimal.de2_dt_DF, disc._planetesimal.di2_dt_DF)]:
+
+                        if active_flag:
+                            d = h5f[f"de2_dt_{name}"]
+                            d.resize(1, axis = 0)
+                            d[0, :] = fn_e(_e2, _i2) * yr
+
+                            d = h5f[f"di2_dt_{name}"]
+                            d.resize(1, axis = 0)
+                            d[0, :] = fn_i(_e2, _i2) * yr
+
+                    if planetesimal_params['drag'] or planetesimal_params['VS_embryo'] or planetesimal_params['VS_pltsml'] or planetesimal_params['DF']:
+                        d = h5f["de2_dt"]
+                        d.resize(1, axis = 0)
+                        d[0, :] = disc._planetesimal.de2_dt(_e2, _i2) * yr
+
+                        d = h5f["di2_dt"]
+                        d.resize(1, axis = 0)
+                        d[0, :] = disc._planetesimal.di2_dt(_e2, _i2) * yr
 
                 h5f["time_snap"].resize(1, axis = 0)
                 h5f["time_snap"][0] = 0.0 # Myr
@@ -970,6 +1019,10 @@ def run_model(config):
                         else:
                             disc._gas(dt, disc, [dust_frac, gas_chem, ice_chem])
 
+                    ## Update planetesimals
+                    if disc._planetesimal:
+                        disc._planetesimal.update(dt, disc, dust)
+
                     ## Do dust evolution
                     if transport_params['radial_drift']:
                         dust(dt, disc, gas_tracers = gas_chem, dust_tracers = ice_chem)
@@ -997,9 +1050,6 @@ def run_model(config):
                     if chemistry_params["on"]:
                         disc.chem.gas.data[:] = np.maximum(disc.chem.gas.data, 0)
                         disc.chem.ice.data[:] = np.maximum(disc.chem.ice.data, 0)
-
-                    if disc._planetesimal:
-                        disc._planetesimal.update(dt, disc, dust)
 
                     if chemistry_params["on"]:
                         ## Exclude planetesimals from chemistry (assume they don't chemically interact with the disc)
@@ -1030,8 +1080,8 @@ def run_model(config):
                         print('\rTime: {} Myr'.format(t / (1.e6 * 2 * np.pi)), flush = "True")
                         print('\rdt: {} yr'.format(dt / (2 * np.pi)), flush = "True")
 
-                    ## Stream per-planet and scalar series every 5 timesteps
-                    if planet_params['include_planets'] and (n % 5 == 0):
+                    ## Stream scalar series every 5 timesteps
+                    if n % 5 == 0:
                         k = h5f["t"].shape[0]
 
                         for name in ["t", "disk_Mdot_star", "disk_Mass", "Tc", "Sigc"]:
@@ -1045,6 +1095,8 @@ def run_model(config):
                         h5f["Tc"][k] = disc.T[0]
                         h5f["Sigc"][k] = disc.Sigma[0]
 
+                    ## Stream per-planet series every 5 timesteps
+                    if planet_params['include_planets'] and (n % 5 == 0):
                         for ip, planet in enumerate(planets):
                             for name, val, grp in [
                                 ("Mcs", planet.M_core.copy(), grp_Mcs),
@@ -1056,25 +1108,33 @@ def run_model(config):
                                 d.resize(d.shape[0] + 1, axis = 0)
                                 d[-1] = val
 
-                            if planet_params["planetesimal_accretion"]:
+                            if planet_params["planetesimal_accretion_insitu"]:
                                 d = grp_Mdot_pltsml[str(ip)]
                                 d.resize(d.shape[0] + 1, axis = 0)
-                                d[-1] = planet_model._pl_acc.computeMdotFortier(planet.R, planet.M)
+                                d[-1] = planet_model._pla_acc.computeMdotFortier(planet.R, planet.M) * yr
+
+                                d = grp_Miso_pltsml[str(ip)]
+                                d.resize(d.shape[0] + 1, axis = 0)
+                                d[-1] = planet_model._pla_acc.M_iso_pltsml(planet.R)
 
                             if planet_params["pebble_accretion"]:
                                 d = grp_Mdot_peb[str(ip)]
                                 d.resize(d.shape[0] + 1, axis = 0)
-                                d[-1] = planet_model._peb_acc.computeMdot(planet.R, planet.M)
+                                d[-1] = planet_model._peb_acc.computeMdot(planet.R, planet.M) * yr
 
-                            if planet_params["migrate"]:
+                                d = grp_Miso_peb[str(ip)]
+                                d.resize(d.shape[0] + 1, axis = 0)
+                                d[-1] = planet_model._peb_acc.M_iso(planet.R)
+
+                            if planet_params["migrate"] and planet_params["planetesimal_accretion_migrate"]:
                                 d = grp_Mdot_mig[str(ip)]
                                 d.resize(d.shape[0] + 1, axis = 0)
-                                d[-1] = planet_model._pl_acc.computeMdotMigration(planet.R, planet.M, planet_model._migrate.migration_rate(planet.R, planet.M))
+                                d[-1] = planet_model._pla_acc.computeMdotMigration(planet.R, planet.M, planet_model._migrate.migration_rate(planet.R, planet.M)) * yr
 
                             if planet_params["gas_accretion"]:
                                 d = grp_Mdot_gas[str(ip)]
                                 d.resize(d.shape[0] + 1, axis = 0)
-                                d[-1] = planet_model._gas_acc.computeMdot(planet.R, planet.M_core, planet.M_env)
+                                d[-1] = planet_model._gas_acc.computeMdot(planet.R, planet.M_core, planet.M_env) * yr
 
                             if chemistry_params["on"]:
                                 for js, chem in enumerate(planet.X_core):
@@ -1108,6 +1168,21 @@ def run_model(config):
                     h5f["e_planetesimals"].resize(s + 1, axis = 0);       h5f["e_planetesimals"][s, :]     = disc._planetesimal.e
                     h5f["i_planetesimals"].resize(s + 1, axis = 0);       h5f["i_planetesimals"][s, :]     = disc._planetesimal.i
 
+                    _e2, _i2 = disc._planetesimal._e2, disc._planetesimal._i2
+                    for name, active_flag, fn_e, fn_i in [
+                        ("drag", planetesimal_params['drag'], disc._planetesimal.de2_dt_drag, disc._planetesimal.di2_dt_drag),
+                        ("VS_embryo", planetesimal_params['VS_embryo'], disc._planetesimal.de2_dt_VS_embryo, disc._planetesimal.di2_dt_VS_embryo),
+                        ("VS_pltsml", planetesimal_params['VS_pltsml'], disc._planetesimal.de2_dt_VS_pltsml, disc._planetesimal.di2_dt_VS_pltsml),
+                        ("DF", planetesimal_params['DF'], disc._planetesimal.de2_dt_DF, disc._planetesimal.di2_dt_DF)]:
+
+                        if active_flag:
+                            h5f[f"de2_dt_{name}"].resize(s + 1, axis = 0); h5f[f"de2_dt_{name}"][s, :] = fn_e(_e2, _i2) * yr
+                            h5f[f"di2_dt_{name}"].resize(s + 1, axis = 0); h5f[f"di2_dt_{name}"][s, :] = fn_i(_e2, _i2) * yr
+
+                    if planetesimal_params['drag'] or planetesimal_params['VS_embryo'] or planetesimal_params['VS_pltsml'] or planetesimal_params['DF']:
+                        h5f["de2_dt"].resize(s + 1, axis = 0); h5f["de2_dt"][s, :] = disc._planetesimal.de2_dt(_e2, _i2) * yr
+                        h5f["di2_dt"].resize(s + 1, axis = 0); h5f["di2_dt"][s, :] = disc._planetesimal.di2_dt(_e2, _i2) * yr
+
                 h5f.flush()
 
             ## Mark file complete
@@ -1121,7 +1196,7 @@ def run_model(config):
 
 if __name__ == "__main__":
     ## Load config parameters from JSON file
-    config_path = "/Users/ben/Downloads/Planet Formation/DiscEvolution Simulations/Config/20260720_disc_evolution_test.json"
+    config_path = "/Users/ben/Downloads/Planet Formation/DiscEvolution Simulations/Config/20260804_full_accretion.json"
 
     if not os.path.exists(config_path):
         print(f"Error: config file not found: {config_path}", file = sys.stderr)

@@ -15,7 +15,6 @@ from DiscEvolution.reconstruction import DonorCell, VanLeer
 from DiscEvolution.chemistry import SimpleCOMolAbund
 from scipy.integrate import ode, solve_ivp
 from scipy.signal import savgol_filter
-from scipy.optimize import least_squares
 
 
 
@@ -29,7 +28,7 @@ class DustyDisc(AccretionDisc):
         star     : Stellar object
         eos      : Equation of state
         Sigma    : Initial surface density distribution
-        rho_s    : solid density, default=1
+        rho_s    : solid (grain/pebble) density, default=1
         Sc       : Schmidt number, default=1
         feedback : When False, the dust mass is considered to be a negligible
                    fraction of the total mass.
@@ -47,9 +46,10 @@ class DustyDisc(AccretionDisc):
 
         self._Sc = Sc
         self._feedback = feedback
+        
         if grain_size is not None:
             self._a = grain_size
-        
+
         self._planetesimal = None
 
     def Stokes(self, Sigma=None, size=None):
@@ -186,6 +186,14 @@ class DustyDisc(AccretionDisc):
     @property
     def M_planetesimal(self):
         return self._M_planetesimal
+
+    @property
+    def rho_s(self):
+        return self._rho_s
+
+    @property
+    def rho_pltsml(self):
+        return self._rho_pltsml
 
     @property
     def mfp_H2(self):
@@ -570,7 +578,7 @@ class PlanetesimalFormation(object):
         R_planetesimal (float): The radius of the planetesimal (km).
         M_planetesimal (float): The mass of the planetesimal (g).
         H (ndarray): The scale height profile of the disc.
-        rho_s (float): The material density of the planetesimal (g/cm^3).
+        rho_pltsml (float): The material density of the planetesimal (g/cm^3), default=2.0.
         St_min (float): The minimum Stokes number.
         St_max (float): The maximum Stokes number.
         trap_lifetime (float): The lifetime of the trap in terms of number of local orbits.
@@ -579,7 +587,7 @@ class PlanetesimalFormation(object):
         If planetesimals are being included, pass disc._planetesimal = PlanetesimalFormation(...) after setting up the disc class.
     """
 
-    def __init__(self, disc, planets = None, d_planetesimal = 100, rho_s = 1.,
+    def __init__(self, disc, planets = None, d_planetesimal = 100, rho_pltsml = 2.,
                  St_min = 0.001, St_max = 10.0, trap_lifetime = 100, pla_eff = 0.1,
                  drag = True, VS_embryo = True, VS_pltsml = True, DF = True,
                  e_init = 'eq', i_init = 'eq'):
@@ -592,12 +600,12 @@ class PlanetesimalFormation(object):
         self._use_SI = str(d_planetesimal).upper() == 'SI'
 
         if self._use_SI:
-            self._R_planetesimal = (3 * self.M_birth(disc) * Mearth / (4 * np.pi * disc._rho_s)) ** (1/3) / AU  # convert to AU
+            self._R_planetesimal = (3 * self.M_birth(disc) * Mearth / (4 * np.pi * rho_pltsml)) ** (1/3) / AU  # convert to AU
             self._M_planetesimal = self.M_birth(disc) * Mearth  # convert to grams
 
         else:
             self._R_planetesimal = np.full_like(disc.R, ((d_planetesimal/2) * 1e5) / AU) # convert to AU
-            self._M_planetesimal = 4/3 * np.pi * ((self._R_planetesimal * AU) ** 3) * disc._rho_s
+            self._M_planetesimal = 4/3 * np.pi * ((self._R_planetesimal * AU) ** 3) * rho_pltsml
 
         # Set active evolution terms
 
@@ -608,7 +616,7 @@ class PlanetesimalFormation(object):
 
         # Set other parameters
 
-        self._rho_s = rho_s
+        self._rho_pltsml = rho_pltsml
         self._H = disc.H
         self._St_min = St_min
         self._St_max = St_max
@@ -622,6 +630,7 @@ class PlanetesimalFormation(object):
         disc._eps = np.vstack((disc._eps, disc._eps[0]*0))
         disc._a = np.vstack((disc._a, disc._a[0]*0))
 
+        disc._rho_pltsml = rho_pltsml
         disc._St_min = St_min
         disc._St_max = St_max
         disc._d = 5. * self._H
@@ -774,22 +783,22 @@ class PlanetesimalFormation(object):
         Rpltsml = self._R_planetesimal * AU
         cs = disc.cs * (AU * Omega0)
         rho_g = disc.midplane_gas_density
-        rho_s = self._rho_s
+        rho_pltsml = self._rho_pltsml
         mfp_H2 = disc.mfp_H2
 
         # Epstein regime (Rpltsml < 1.5 * mfp_H2)
         filter = Rpltsml < 1.5 * mfp_H2
-        
+
         e2_dot = np.zeros_like(e2, dtype = float)
-        e2_dot[filter] = -1 * e2[filter] * cs[filter] * rho_g[filter] / (rho_s * Rpltsml[filter])
+        e2_dot[filter] = -1 * e2[filter] * cs[filter] * rho_g[filter] / (rho_pltsml * Rpltsml[filter])
 
         Re = self.Reynolds(e2, i2)
         vrel = self.v_rel(e2, i2)
 
         # Stokes regime (Re < 27) and quadratic regime (Re > 27)
         e2_dot[~filter] = np.where(Re[~filter] < 27,
-            -3/2 * e2[~filter] * mfp_H2[~filter] * cs[~filter] * rho_g[~filter] / (rho_s * Rpltsml[~filter] ** 2),
-            -2 * e2[~filter] * vrel[~filter] * rho_g[~filter] / (6 * rho_s * Rpltsml[~filter]))
+            -3/2 * e2[~filter] * mfp_H2[~filter] * cs[~filter] * rho_g[~filter] / (rho_pltsml * Rpltsml[~filter] ** 2),
+            -2 * e2[~filter] * vrel[~filter] * rho_g[~filter] / (6 * rho_pltsml * Rpltsml[~filter]))
 
         return e2_dot / Omega0
 
@@ -808,22 +817,22 @@ class PlanetesimalFormation(object):
         Rpltsml = self._R_planetesimal * AU
         cs = disc.cs * (AU * Omega0)
         rho_g = disc.midplane_gas_density
-        rho_s = self._rho_s
+        rho_pltsml = self._rho_pltsml
         mfp_H2 = disc.mfp_H2
 
         # Epstein regime (Rpltsml < 1.5 * mfp_H2)
         filter = Rpltsml < 1.5 * mfp_H2
 
         i2_dot = np.zeros_like(i2, dtype = float)
-        i2_dot[filter] = -1/2 * i2[filter] * cs[filter] * rho_g[filter] / (rho_s * Rpltsml[filter])
+        i2_dot[filter] = -1/2 * i2[filter] * cs[filter] * rho_g[filter] / (rho_pltsml * Rpltsml[filter])
 
         Re = self.Reynolds(e2, i2)
         vrel = self.v_rel(e2, i2)
-        
+
         # Stokes regime (Re < 27) and quadratic regime (Re > 27)
         i2_dot[~filter] = np.where(Re[~filter] < 27,
-            -3/4 * i2[~filter] * mfp_H2[~filter] * cs[~filter] * rho_g[~filter] / (rho_s * Rpltsml[~filter] ** 2),
-            -1 * i2[~filter] * vrel[~filter] * rho_g[~filter] / (6 * rho_s * Rpltsml[~filter]))
+            -3/4 * i2[~filter] * mfp_H2[~filter] * cs[~filter] * rho_g[~filter] / (rho_pltsml * Rpltsml[~filter] ** 2),
+            -1 * i2[~filter] * vrel[~filter] * rho_g[~filter] / (6 * rho_pltsml * Rpltsml[~filter]))
 
         return i2_dot / Omega0
             
@@ -1071,22 +1080,22 @@ class PlanetesimalFormation(object):
         Rpltsml = self._R_planetesimal * AU
         cs = disc.cs * (AU * Omega0)
         rho_g = disc.midplane_gas_density
-        rho_s = self._rho_s
+        rho_pltsml = self._rho_pltsml
         mfp_H2 = disc.mfp_H2
 
         # Epstein regime (Rpltsml < 1.5 * mfp_H2)
         filter = Rpltsml < 1.5 * mfp_H2
-        
+
         t_stop = np.empty_like(Rpltsml, dtype = float)
-        t_stop[filter] = rho_s * Rpltsml[filter] / (rho_g[filter] * cs[filter])
+        t_stop[filter] = rho_pltsml * Rpltsml[filter] / (rho_g[filter] * cs[filter])
 
         Re = self.Reynolds(e2, i2)
         vrel = self.v_rel(e2, i2)
-        
+
         # Stokes regime (Re < 27) and quadratic regime (Re > 27)
         t_stop[~filter] = np.where(Re[~filter] < 27,
-            2 * rho_s * Rpltsml[~filter] ** 2 / (3 * rho_g[~filter] * mfp_H2[~filter] * cs[~filter]),
-            6 * rho_s * (Rpltsml[~filter] * 1e5) / (rho_g[~filter] * vrel[~filter]))
+            2 * rho_pltsml * Rpltsml[~filter] ** 2 / (3 * rho_g[~filter] * mfp_H2[~filter] * cs[~filter]),
+            6 * rho_pltsml * (Rpltsml[~filter] * 1e5) / (rho_g[~filter] * vrel[~filter]))
 
         return t_stop
             
