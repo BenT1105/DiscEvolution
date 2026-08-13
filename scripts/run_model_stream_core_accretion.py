@@ -577,12 +577,19 @@ def run_model(config):
         Mp = planet_params['Mp']
         Rp = planet_params['Rp']
 
+        ## Planets with Mp = "SI" are only inserted once the planetesimal surface density becomes nonzero
+        pending_SI_planets = []
+
         for i in range(len(Rp)):
             t_impl = planet_params["implant_time"][i]
             R_impl = Rp[i]
             M_impl = Mp[i]
 
-            planet_model.insert_new_planet(t_impl, R_impl, M_impl, planets)
+            if str(M_impl).upper() == "SI":
+                pending_SI_planets.append((R_impl, M_impl))
+
+            else:
+                planet_model.insert_new_planet(t_impl, R_impl, M_impl, planets)
 
     else:
         planets = None
@@ -613,8 +620,6 @@ def run_model(config):
 
     t = 0
     n = 0
-
-    nplanets = len(config["planets"]["Mp"])
 
     if alpha_SS > 5e-3:
         print ("Not Running model - alpha too high. Alpha, Rd, Mdisk = ", eos.alpha, Rd, disc.Mtot() / Msun)
@@ -654,7 +659,8 @@ def run_model(config):
                     grp_Miso_pltsml = h5f.create_group("M_iso_planetesimal")
 
                 if planet_params["pebble_accretion"]:
-                    grp_Mdot_peb = h5f.create_group("Mdot_pebble")
+                    grp_Mdot_peb_core = h5f.create_group("Mdot_pebble_core")
+                    grp_Mdot_peb_env = h5f.create_group("Mdot_pebble_env")
                     grp_Miso_peb = h5f.create_group("M_iso_pebble")
 
                 if planet_params["migrate"] and planet_params["planetesimal_accretion_migrate"]:
@@ -666,38 +672,49 @@ def run_model(config):
                 if chemistry_params["on"]:
                     grp_Xc = h5f.create_group("X_cores")
                     grp_Xe = h5f.create_group("X_envs")
-                    nchem_core = len(planets[0].X_core)
-                    nchem_env = len(planets[0].X_env)
 
-                for ip in range(nplanets):
-                    grp_Mcs.create_dataset(str(ip), shape = (0,), maxshape = (None,), dtype = "f8", chunks = (1024,))
-                    grp_Mes.create_dataset(str(ip), shape = (0,), maxshape = (None,), dtype = "f8", chunks = (1024,))
-                    grp_Rp.create_dataset(str(ip), shape = (0,), maxshape = (None,), dtype = "f8", chunks = (1024,))
-                    grp_Mdotp.create_dataset(str(ip), shape = (0,), maxshape = (None,), dtype = "f8", chunks = (1024,))
+                def create_dataset_backfilled(grp, key, n_backfill):
+                    d = grp.create_dataset(str(key), shape = (0,), maxshape = (None,), dtype = "f8", chunks = (1024,))
+
+                    if n_backfill:
+                        d.resize(n_backfill, axis = 0)
+                        d[:] = np.nan
+
+                    return d
+
+                ## Creates this planet's datasets, backfilling with NaN for any timesteps already recorded
+                def create_planet_datasets(ip):
+                    n_backfill = h5f["t"].shape[0]
+
+                    for grp in (grp_Mcs, grp_Mes, grp_Rp, grp_Mdotp):
+                        create_dataset_backfilled(grp, ip, n_backfill)
 
                     if planet_params["planetesimal_accretion_insitu"]:
-                        grp_Mdot_pltsml.create_dataset(str(ip), shape = (0,), maxshape = (None,), dtype = "f8", chunks = (1024,))
-                        grp_Miso_pltsml.create_dataset(str(ip), shape = (0,), maxshape = (None,), dtype = "f8", chunks = (1024,))
+                        for grp in (grp_Mdot_pltsml, grp_Miso_pltsml):
+                            create_dataset_backfilled(grp, ip, n_backfill)
 
                     if planet_params["pebble_accretion"]:
-                        grp_Mdot_peb.create_dataset(str(ip), shape = (0,), maxshape = (None,), dtype = "f8", chunks = (1024,))
-                        grp_Miso_peb.create_dataset(str(ip), shape = (0,), maxshape = (None,), dtype = "f8", chunks = (1024,))
+                        for grp in (grp_Mdot_peb_core, grp_Mdot_peb_env, grp_Miso_peb):
+                            create_dataset_backfilled(grp, ip, n_backfill)
 
                     if planet_params["migrate"] and planet_params["planetesimal_accretion_migrate"]:
-                        grp_Mdot_mig.create_dataset(str(ip), shape = (0,), maxshape = (None,), dtype = "f8", chunks = (1024,))
+                        create_dataset_backfilled(grp_Mdot_mig, ip, n_backfill)
 
                     if planet_params["gas_accretion"]:
-                        grp_Mdot_gas.create_dataset(str(ip), shape = (0,), maxshape = (None,), dtype = "f8", chunks = (1024,))
+                        create_dataset_backfilled(grp_Mdot_gas, ip, n_backfill)
 
                     if chemistry_params["on"]:
                         pgrp_c = grp_Xc.create_group(str(ip))
                         pgrp_e = grp_Xe.create_group(str(ip))
 
-                        for js in range(nchem_core):
-                            pgrp_c.create_dataset(str(js), shape = (0,), maxshape = (None,), dtype = "f8", chunks = (1024,))
+                        for js in range(Nchem):
+                            create_dataset_backfilled(pgrp_c, js, n_backfill)
 
-                        for js in range(nchem_env):
-                            pgrp_e.create_dataset(str(js), shape = (0,), maxshape = (None,), dtype = "f8", chunks = (1024,))
+                        for js in range(Nchem):
+                            create_dataset_backfilled(pgrp_e, js, n_backfill)
+
+                for ip in range(planets.N):
+                    create_planet_datasets(ip)
 
             ## Save the grid once
             h5f.create_dataset("R", data = grid.Rc)
@@ -744,70 +761,88 @@ def run_model(config):
             disk_v = disc._gas.viscous_velocity(disc, disc.Sigma)
             disk_Mdot = -2 * np.pi * disc._grid.Rc[0:-1] * disc.Sigma[0:-1] * disk_v * (AU * AU) * (yr / Msun)
 
+            ## Scalars (always written at t = 0 -- the main loop's n % 5 == 0 write
+            ## never fires for t = 0 itself, so there is no risk of a duplicate entry
+            ## here, unlike the disk-profile snapshots below)
+            for name in ["t", "disk_Mdot_star", "disk_Mass", "Tc", "Sigc"]:
+                h5f[name].resize(1, axis = 0)
+
+            h5f["t"][0] = 0.0
+            h5f["disk_Mdot_star"][0] = disk_Mdot[0]
+            h5f["disk_Mass"][0] = disc.Mtot()
+            h5f["Tc"][0] = disc.T[0]
+            h5f["Sigc"][0] = disc.Sigma[0]
+
+            ## Per-planet
+            if planet_params['include_planets']:
+                ## Exact rates at t = 0, before any integrate() call has populated planet_model.rates
+                if chemistry_params["on"]:
+                    M_Z_0   = (planets.X_core * planets.M_core).sum(0) + (planets.X_env * planets.M_env).sum(0)
+                    M_HHe_0 = planets.M_core + planets.M_env - M_Z_0
+
+                else:
+                    M_Z_0, M_HHe_0 = planets.M_core, planets.M_env
+
+                initial_rates = planet_model._growth_rates(planets.R, planets.M_core, planets.M_env, M_Z_0, M_HHe_0)
+
+                for ip, planet in enumerate(planets):
+                    for name, val, grp in [
+                        ("Mcs", planet.M_core.copy(), grp_Mcs),
+                        ("Mes", planet.M_env.copy(), grp_Mes),
+                        ("Rp", planet.R.copy(), grp_Rp),
+                        ("disk_Mdot_p", np.interp(planet.R, grid.Rc[0:-1], disk_Mdot), grp_Mdotp)]:
+
+                        d = grp[str(ip)]
+                        d.resize(1, axis = 0)
+                        d[0] = val
+
+                    if planet_params["planetesimal_accretion_insitu"]:
+                        d = grp_Mdot_pltsml[str(ip)]
+                        d.resize(1, axis = 0)
+                        d[0] = initial_rates["Mdot_planetesimal_insitu"][ip] * yr
+
+                        d = grp_Miso_pltsml[str(ip)]
+                        d.resize(1, axis = 0)
+                        d[0] = planet_model._pla_acc.M_iso_pltsml(planet.R)
+
+                    if planet_params["pebble_accretion"]:
+                        d = grp_Mdot_peb_core[str(ip)]
+                        d.resize(1, axis = 0)
+                        d[0] = initial_rates["Mdot_pebble_core"][ip] * yr
+
+                        d = grp_Mdot_peb_env[str(ip)]
+                        d.resize(1, axis = 0)
+                        d[0] = initial_rates["Mdot_pebble_env"][ip] * yr
+
+                        d = grp_Miso_peb[str(ip)]
+                        d.resize(1, axis = 0)
+                        d[0] = planet_model._peb_acc.M_iso(planet.R)
+
+                    if planet_params["migrate"] and planet_params["planetesimal_accretion_migrate"]:
+                        d = grp_Mdot_mig[str(ip)]
+                        d.resize(1, axis = 0)
+                        d[0] = initial_rates["Mdot_planetesimal_migration"][ip] * yr
+
+                    if planet_params["gas_accretion"]:
+                        d = grp_Mdot_gas[str(ip)]
+                        d.resize(1, axis = 0)
+                        d[0] = initial_rates["Mdot_gas"][ip] * yr
+
+                    if chemistry_params["on"]:
+                        for js, chem in enumerate(planet.X_core):
+                            d = grp_Xc[str(ip)][str(js)]
+                            d.resize(1, axis = 0)
+                            d[0] = chem
+
+                        for js, env in enumerate(planet.X_env):
+                            d = grp_Xe[str(ip)][str(js)]
+                            d.resize(1, axis = 0)
+                            d[0] = env
+
+            ## Disk profiles: gated, since if 0.0 is already one of the requested
+            ## snapshot times, the main loop's "for ti in times" will write this
+            ## snapshot itself when it reaches ti = 0
             if 0.0 not in sim_params['t_interval']:
-                ## Scalars
-                for name in ["t", "disk_Mdot_star", "disk_Mass", "Tc", "Sigc"]:
-                    h5f[name].resize(1, axis = 0)
-
-                h5f["t"][0] = 0.0
-                h5f["disk_Mdot_star"][0] = disk_Mdot[0]
-                h5f["disk_Mass"][0] = disc.Mtot()
-                h5f["Tc"][0] = disc.T[0]
-                h5f["Sigc"][0] = disc.Sigma[0]
-
-                ## Per-planet
-                if planet_params['include_planets']:
-                    for ip, planet in enumerate(planets):
-                        for name, val, grp in [
-                            ("Mcs", planet.M_core.copy(), grp_Mcs),
-                            ("Mes", planet.M_env.copy(), grp_Mes),
-                            ("Rp", planet.R.copy(), grp_Rp),
-                            ("disk_Mdot_p", np.interp(planet.R, grid.Rc[0:-1], disk_Mdot), grp_Mdotp)]:
-
-                            d = grp[str(ip)]
-                            d.resize(1, axis = 0)
-                            d[0] = val
-
-                        if planet_params["planetesimal_accretion_insitu"]:
-                            d = grp_Mdot_pltsml[str(ip)]
-                            d.resize(1, axis = 0)
-                            d[0] = planet_model._pla_acc.computeMdotFortier(planet.R, planet.M) * yr
-
-                            d = grp_Miso_pltsml[str(ip)]
-                            d.resize(1, axis = 0)
-                            d[0] = planet_model._pla_acc.M_iso_pltsml(planet.R)
-
-                        if planet_params["pebble_accretion"]:
-                            d = grp_Mdot_peb[str(ip)]
-                            d.resize(1, axis = 0)
-                            d[0] = planet_model._peb_acc.computeMdot(planet.R, planet.M) * yr
-
-                            d = grp_Miso_peb[str(ip)]
-                            d.resize(1, axis = 0)
-                            d[0] = planet_model._peb_acc.M_iso(planet.R)
-
-                        if planet_params["migrate"] and planet_params["planetesimal_accretion_migrate"]:
-                            d = grp_Mdot_mig[str(ip)]
-                            d.resize(1, axis = 0)
-                            d[0] = planet_model._pla_acc.computeMdotMigration(planet.R, planet.M, planet_model._migrate.migration_rate(planet.R, planet.M)) * yr
-
-                        if planet_params["gas_accretion"]:
-                            d = grp_Mdot_gas[str(ip)]
-                            d.resize(1, axis = 0)
-                            d[0] = planet_model._gas_acc.computeMdot(planet.R, planet.M_core, planet.M_env) * yr
-
-                        if chemistry_params["on"]:
-                            for js, chem in enumerate(planet.X_core):
-                                d = grp_Xc[str(ip)][str(js)]
-                                d.resize(1, axis = 0)
-                                d[0] = chem
-
-                            for js, env in enumerate(planet.X_env):
-                                d = grp_Xe[str(ip)][str(js)]
-                                d.resize(1, axis = 0)
-                                d[0] = env
-
-                ## Disk profiles
                 v_drift = disc.v_drift.copy()
                 stokes = disc.Stokes().copy()
                 for name, arr in [
@@ -1023,6 +1058,20 @@ def run_model(config):
                     if disc._planetesimal:
                         disc._planetesimal.update(dt, disc, dust)
 
+                    ## Insert any pending "SI" planets once the planetesimal surface density is nonzero
+                    if planet_params['include_planets'] and pending_SI_planets and disc._planetesimal:
+                        still_pending = []
+
+                        for R_impl, M_impl in pending_SI_planets:
+                            if disc.interp(R_impl, disc.Sigma_D[2]) > 0:
+                                planet_model.insert_new_planet(t, R_impl, M_impl, planets)
+                                create_planet_datasets(planets.N - 1)
+
+                            else:
+                                still_pending.append((R_impl, M_impl))
+
+                        pending_SI_planets = still_pending
+
                     ## Do dust evolution
                     if transport_params['radial_drift']:
                         dust(dt, disc, gas_tracers = gas_chem, dust_tracers = ice_chem)
@@ -1108,19 +1157,24 @@ def run_model(config):
                                 d.resize(d.shape[0] + 1, axis = 0)
                                 d[-1] = val
 
+                            ## planet_model.rates holds the exact rates that drove the most recent integrate() call
                             if planet_params["planetesimal_accretion_insitu"]:
                                 d = grp_Mdot_pltsml[str(ip)]
                                 d.resize(d.shape[0] + 1, axis = 0)
-                                d[-1] = planet_model._pla_acc.computeMdotFortier(planet.R, planet.M) * yr
+                                d[-1] = planet_model.rates["Mdot_planetesimal_insitu"][ip] * yr
 
                                 d = grp_Miso_pltsml[str(ip)]
                                 d.resize(d.shape[0] + 1, axis = 0)
                                 d[-1] = planet_model._pla_acc.M_iso_pltsml(planet.R)
 
                             if planet_params["pebble_accretion"]:
-                                d = grp_Mdot_peb[str(ip)]
+                                d = grp_Mdot_peb_core[str(ip)]
                                 d.resize(d.shape[0] + 1, axis = 0)
-                                d[-1] = planet_model._peb_acc.computeMdot(planet.R, planet.M) * yr
+                                d[-1] = planet_model.rates["Mdot_pebble_core"][ip] * yr
+
+                                d = grp_Mdot_peb_env[str(ip)]
+                                d.resize(d.shape[0] + 1, axis = 0)
+                                d[-1] = planet_model.rates["Mdot_pebble_env"][ip] * yr
 
                                 d = grp_Miso_peb[str(ip)]
                                 d.resize(d.shape[0] + 1, axis = 0)
@@ -1129,12 +1183,12 @@ def run_model(config):
                             if planet_params["migrate"] and planet_params["planetesimal_accretion_migrate"]:
                                 d = grp_Mdot_mig[str(ip)]
                                 d.resize(d.shape[0] + 1, axis = 0)
-                                d[-1] = planet_model._pla_acc.computeMdotMigration(planet.R, planet.M, planet_model._migrate.migration_rate(planet.R, planet.M)) * yr
+                                d[-1] = planet_model.rates["Mdot_planetesimal_migration"][ip] * yr
 
                             if planet_params["gas_accretion"]:
                                 d = grp_Mdot_gas[str(ip)]
                                 d.resize(d.shape[0] + 1, axis = 0)
-                                d[-1] = planet_model._gas_acc.computeMdot(planet.R, planet.M_core, planet.M_env) * yr
+                                d[-1] = planet_model.rates["Mdot_gas"][ip] * yr
 
                             if chemistry_params["on"]:
                                 for js, chem in enumerate(planet.X_core):
@@ -1185,6 +1239,9 @@ def run_model(config):
 
                 h5f.flush()
 
+            if planet_params['include_planets']:
+                h5f.create_dataset("t_form", data = planets.t_form / (2 * np.pi)) # yr, time each planet was inserted
+
             ## Mark file complete
             h5f.attrs["complete"] = True
 
@@ -1196,7 +1253,7 @@ def run_model(config):
 
 if __name__ == "__main__":
     ## Load config parameters from JSON file
-    config_path = "/Users/ben/Downloads/Planet Formation/DiscEvolution Simulations/Config/20260804_full_accretion.json"
+    config_path = "/Users/ben/Downloads/Planet Formation/DiscEvolution Simulations/Config/20260810_full_accretion.json"
 
     if not os.path.exists(config_path):
         print(f"Error: config file not found: {config_path}", file = sys.stderr)

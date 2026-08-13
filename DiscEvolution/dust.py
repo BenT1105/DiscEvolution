@@ -46,7 +46,7 @@ class DustyDisc(AccretionDisc):
 
         self._Sc = Sc
         self._feedback = feedback
-        
+
         if grain_size is not None:
             self._a = grain_size
 
@@ -731,7 +731,7 @@ class PlanetesimalFormation(object):
         if self.drag:
             e2_dot += self.de2_dt_drag(e2, i2)
 
-        if self.VS_embryo and self.planets is not None:
+        if self.VS_embryo:
             e2_dot += self.de2_dt_VS_embryo(e2, i2)
 
         if self.VS_pltsml:
@@ -757,7 +757,7 @@ class PlanetesimalFormation(object):
         if self.drag:
             i2_dot += self.di2_dt_drag(e2, i2)
 
-        if self.VS_embryo and self.planets is not None:
+        if self.VS_embryo:
             i2_dot += self.di2_dt_VS_embryo(e2, i2)
 
         if self.VS_pltsml:

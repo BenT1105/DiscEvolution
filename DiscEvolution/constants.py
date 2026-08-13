@@ -6,6 +6,7 @@ Rsun = 6.96e10 # g
 Mearth = 5.972e27 # g
 Mjup = 317.8 * Mearth # g
 AU = 1.496e13 # cm
+Lsun = 3.839e33 # erg/s
 
 k_B = 1.3806e-16 # erg/K
 sig_SB = 5.6704e-5 # erg/s/cm^2/K^4

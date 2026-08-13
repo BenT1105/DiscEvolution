@@ -554,6 +554,8 @@ def run_model(config):
     ## Set up planets
     ## --------------
 
+    time_keeper = []
+
     if planet_params['include_planets']:
         if chemistry_params["on"]:
             Nchem = disc.chem.ice.data.shape[0]
@@ -577,42 +579,52 @@ def run_model(config):
 
         Mp = planet_params['Mp']
         Rp = planet_params['Rp']
-        
+
+        Rs, Mcs, Mes, X_cores, X_envs, disk_Mdot_p = [], [], [], [], [], []
+        Mdot_planetesimal, Mdot_pebble_core, Mdot_pebble_env, Mdot_migration, Mdot_gas = [], [], [], [], []
+        M_iso_planetesimal, M_iso_pebble = [], []
+
+        ## Keeps the per-planet tracking lists index-aligned with 'planets'
+        ## Planets insrted after t = 0 are backfilled with zeros to keep the lists aligned
+        def add_planet_tracking_slot():
+            n_backfill = len(time_keeper)
+
+            Rs.append([np.nan] * n_backfill)
+            Mcs.append([np.nan] * n_backfill)
+            Mes.append([np.nan] * n_backfill)
+            disk_Mdot_p.append([np.nan] * n_backfill)
+
+            Mdot_planetesimal.append([np.nan] * n_backfill)
+            Mdot_pebble_core.append([np.nan] * n_backfill)
+            Mdot_pebble_env.append([np.nan] * n_backfill)
+            Mdot_migration.append([np.nan] * n_backfill)
+            Mdot_gas.append([np.nan] * n_backfill)
+
+            M_iso_planetesimal.append([np.nan] * n_backfill)
+            M_iso_pebble.append([np.nan] * n_backfill)
+
+            if chemistry_params["on"]:
+                X_cores.append([[np.nan] * n_backfill for num in range(0, Nchem, 1)])
+                X_envs.append([[np.nan] * n_backfill for num in range(0, Nchem, 1)])
+
+        ## Planets with Mp = "SI" are are only inserted once the planetesimal surface density becomes nonzero
+        pending_SI_planets = []
+
         for i in range(len(Rp)):
             t_impl = planet_params["implant_time"][i]
             R_impl = Rp[i]
             M_impl = Mp[i]
 
-            planet_model.insert_new_planet(t_impl, R_impl, M_impl, planets)
+            if str(M_impl).upper() == "SI":
+                pending_SI_planets.append((R_impl, M_impl))
 
-        Rs, Mcs, Mes, Mdot_tracker, X_cores, X_envs, disk_Mdot_p = [], [], [], [], [], [], []
-        Mdot_planetesimal, Mdot_pebble_core, Mdot_pebble_env, Mdot_migration, Mdot_gas = [], [], [], [], []
-        M_iso_planetesimal, M_iso_pebble = [], []
-
-        for i, planet in enumerate(planets):
-            Rs.append([])
-            Mcs.append([])
-            Mes.append([])
-            disk_Mdot_p.append([])
-            Mdot_tracker.append([])
-
-            Mdot_planetesimal.append([])
-            Mdot_pebble_core.append([])
-            Mdot_pebble_env.append([])
-            Mdot_migration.append([])
-            Mdot_gas.append([])
-
-            M_iso_planetesimal.append([])
-            M_iso_pebble.append([])
-
-            if chemistry_params["on"]:
-                X_cores.append([[] for num in range(0, Nchem, 1)]) 
-                X_envs.append([[] for num in range(0, Nchem, 1)])
+            else:
+                planet_model.insert_new_planet(t_impl, R_impl, M_impl, planets)
+                add_planet_tracking_slot()
 
     else:
         planets = None
-        
-    time_keeper = []
+
     disk_Mdot_star, disk_Mass, Tc, Sigc = [], [], [], []
 
     ## --------------------
@@ -805,6 +817,20 @@ def run_model(config):
                 if disc._planetesimal:
                     disc._planetesimal.update(dt, disc, dust)
 
+                ## Insert any pending "SI" planets once the planetesimal surface density is nonzero
+                if planet_params['include_planets'] and pending_SI_planets and disc._planetesimal:
+                    still_pending = []
+
+                    for R_impl, M_impl in pending_SI_planets:
+                        if disc.interp(R_impl, disc.Sigma_D[2]) > 0:
+                            planet_model.insert_new_planet(t, R_impl, M_impl, planets)
+                            add_planet_tracking_slot()
+
+                        else:
+                            still_pending.append((R_impl, M_impl))
+
+                    pending_SI_planets = still_pending
+
                 ## Do dust evolution
                 if transport_params['radial_drift']:
                     dust(dt, disc, gas_tracers = gas_chem, dust_tracers = ice_chem)
@@ -979,7 +1005,7 @@ def run_model(config):
 
                 if planet_params['include_planets']:
                     for planet_count, planet_ice_chem in enumerate(X_cores):
-                        planetary_mol_abund = SimpleCOMolAbund(len(X_cores[0][0]))
+                        planetary_mol_abund = SimpleCOMolAbund(len(X_cores[planet_count][0]))
                         planetary_mol_abund.data[:] = (np.array(planet_ice_chem) * np.array(Mcs[planet_count]) + np.array(X_envs[planet_count]) * np.array(Mes[planet_count])) / planets.M[planet_count] # units are not right but doesn't matter if only C/O is being found
                         # planetary_mol_abund.data[:] = np.array(X_envs[count])
                         planetary_atom_abund = planetary_mol_abund.atomic_abundance()
@@ -1012,7 +1038,7 @@ def run_model(config):
     if not alpha_SS > 5e-3:
         if planet_params['include_planets']:
             for planet_count, planet_ice_chem in enumerate(X_cores):
-                planetary_mol_abund = SimpleCOMolAbund(len(X_cores[0][0]))
+                planetary_mol_abund = SimpleCOMolAbund(len(X_cores[planet_count][0]))
                 planetary_mol_abund.data[:] = (np.array(planet_ice_chem) * np.array(Mcs[planet_count]) + np.array(X_envs[planet_count]) * np.array(Mes[planet_count])) / planets.M[planet_count] # units are not right but doesn't matter if only C/O is being found
                 # planetary_mol_abund.data[:] = np.array(X_envs[planet_count])
                 planetary_atom_abund = planetary_mol_abund.atomic_abundance()
@@ -1060,6 +1086,7 @@ def run_model(config):
             data["Mes"] = Mes
             data["Rp"] = Rs
             data["disk_Mdot_p"] = disk_Mdot_p
+            data["t_form"] = (planets.t_form / (2 * np.pi)).tolist() # yr, time each planet was inserted
 
             if planet_params["planetesimal_accretion_insitu"]:
                 data["Mdot_planetesimal"] = Mdot_planetesimal
@@ -1112,7 +1139,7 @@ def run_model(config):
 
 if __name__ == "__main__":
     ## Load config parameters from JSON file
-    config_path = "/Users/ben/Downloads/Planet Formation/DiscEvolution Simulations/Config/20260804_full_accretion.json"
+    config_path = "/Users/ben/Downloads/Planet Formation/DiscEvolution Simulations/Config/20260810_full_accretion.json"
 
     if not os.path.exists(config_path):
         print(f"Error: config file not found: {config_path}", file = sys.stderr)
