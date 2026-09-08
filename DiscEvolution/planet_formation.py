@@ -1351,6 +1351,7 @@ class Bitsch2015Model(object):
     args:
         disc     : accretion disc model
         pb_gas_f : fraction of pebble accretion rate that arrives as gas, default = 0.1
+        f_plt    : ratio between the embryo birth mass and the planetesimal birth mass, default = 400
         migrate  : Whether to include migration, default = True
         pebble_acc : Whether to include pebble accretion, default = True
         planetesimal_acc_migrate: function to compute accretion rate during migration, default = True
@@ -1361,9 +1362,10 @@ class Bitsch2015Model(object):
         **kwargs : additional arguments passed to GasAccretion object
     """
 
-    def __init__(self, disc, pb_gas_f = 0.1, migrate = True, pebble_acc = True, planetesimal_acc_migrate = True, planetesimal_acc_insitu = True, gas_acc = True, winds = False, rho_core = 5.5, **kwargs):
+    def __init__(self, disc, pb_gas_f = 0.1, f_plt = 400, migrate = True, pebble_acc = True, planetesimal_acc_migrate = True, planetesimal_acc_insitu = True, gas_acc = True, winds = False, rho_core = 5.5, **kwargs):
 
         self._f_gas = pb_gas_f
+        self._f_plt = f_plt
         self._disc = disc
 
         self._gas_acc = None
@@ -1501,9 +1503,9 @@ class Bitsch2015Model(object):
 
         return 25 * (h / 0.05) ** 3 * (0.34 * (-3 / np.log10(alpha)) ** 4 + 0.66 ) * (1 - (dlnP + 2.5) / 6)
     
-    def M_birth(self, Rp):
+    def M_birth_embryo(self, Rp):
         """
-        Computes the streaming instability birth mass in Earth masses (Johnston et al 2026).
+        Computes the streaming instability birth mass of embryos in Earth masses (equation 14 from Liu et al 2020).
 
         Rp: Protoplanet location (in AU)
 
@@ -1511,15 +1513,18 @@ class Bitsch2015Model(object):
         """
 
         disc = self._disc
-
+        
         rho_g = disc.interp(Rp, disc.midplane_gas_density)
         Omega_k = disc.star.Omega_k(Rp)
+        Z = disc.dust_frac_SI
         Mstar = disc.star.M
         h = disc.interp(Rp, disc.h)
 
         gamma = 4 * np.pi * G * rho_g / (Omega_k ** 2) * (AU ** 3 / Msun) # self gravity term
 
-        return 6e-2 * (gamma * np.pi) ** 1.5 * (h / 0.05) ** 3 * (Mstar / 2.4)
+        M_birth_pltsml = 5e-6 * (Z / 0.02) ** 0.5 * (gamma * np.pi) ** 1.5 * (h / 0.05) ** 3 * (Mstar / 0.1)
+
+        return self._f_plt * M_birth_pltsml
     
     def insert_new_planet(self, t, R, M, planets):
         """
@@ -1539,7 +1544,7 @@ class Bitsch2015Model(object):
         # Set initial core mass
 
         if self._use_SI:
-            Mc = self.M_birth(R)
+            Mc = self.M_birth_embryo(R)
 
         elif self._use_PA:
             Mc = self.M_on_Lorek(R)

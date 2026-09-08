@@ -90,6 +90,11 @@ class DustyDisc(AccretionDisc):
         return self._eps
 
     @property
+    def dust_frac_SI(self):
+        """Initial dust fraction for streaming instability"""
+        return self._eps_SI
+
+    @property
     def grain_size(self):
         """Grain size in cm"""
         return self._a
@@ -306,6 +311,7 @@ class DustGrowthTwoPop(DustyDisc):
         star      : Stellar object
         eos       : Equation of state
         eps       : Initital dust fraction
+        eps_SI    : Initial dust fraction for streaming instability (default = 0.02)
         Sigma     : Initial surface density distribution
         rho_s     : solid density, default=1
         Sc        : Schmidt number, default=1
@@ -324,7 +330,7 @@ class DustGrowthTwoPop(DustyDisc):
         transition_factor: Factor controlling width of smooth transition between frag/drift regimes (default=2)
     """
 
-    def __init__(self, grid, star, eos, eps, Sigma=None,
+    def __init__(self, grid, star, eos, eps, eps_SI = 0.02, Sigma=None,
                  rho_s=1., Sc=1., uf_0=100., uf_ice=1e3, f_ice=1, thresh=0.1,
                  f_grow=1.0, a0=1e-5, amin=1e-5, f_drift=0.55, f_frag=0.37, feedback=True,
                  start_small=True, distribution_slope=3.5, gas=None, transition_factor=2.0):
@@ -350,6 +356,7 @@ class DustGrowthTwoPop(DustyDisc):
             self._a     = np.empty([2, Ncells], dtype='f8')
         self._eps[0] = eps # start with all dust in small grains
         self._eps[1] = 0
+        self._eps_SI = eps_SI
         self._a[0]   = amin
         self._a[1]   = a0
         
@@ -600,8 +607,8 @@ class PlanetesimalFormation(object):
         self._use_SI = str(d_planetesimal).upper() == 'SI'
 
         if self._use_SI:
-            self._R_planetesimal = (3 * self.M_birth(disc) * Mearth / (4 * np.pi * rho_pltsml)) ** (1/3) / AU  # convert to AU
-            self._M_planetesimal = self.M_birth(disc) * Mearth  # convert to grams
+            self._R_planetesimal = (3 * self.M_birth_pltsml(disc) * Mearth / (4 * np.pi * rho_pltsml)) ** (1/3) / AU  # convert to AU
+            self._M_planetesimal = self.M_birth_pltsml(disc) * Mearth  # convert to grams
 
         else:
             self._R_planetesimal = np.full_like(disc.R, ((d_planetesimal/2) * 1e5) / AU) # convert to AU
@@ -670,23 +677,22 @@ class PlanetesimalFormation(object):
 
     # Initial conditions for planetesimal formation
 
-    def M_birth(self, disc):
+    def M_birth_pltsml(self, disc):
         """
-        Computes the streaming instability birth mass in Earth masses (Johnston et al 2026).
-
-        Rp: Protoplanet location (in AU)
+        Computes the streaming instability birth mass of planetesimals in Earth masses (equation 13 from Liu et al 2020).
 
         return: Streaming instability birth mass (in Earth masses)
         """
 
         rho_g = disc.midplane_gas_density
         Omega_k = disc.star.Omega_k(disc.R)
+        Z = disc.dust_frac_SI
         Mstar = disc.star.M
         h = disc.h
 
         gamma = 4 * np.pi * G * rho_g / (Omega_k ** 2) * (AU ** 3 / Msun) # self gravity term
 
-        return 6e-2 * (gamma * np.pi) ** 1.5 * (h / 0.05) ** 3 * (Mstar / 2.4)
+        return 5e-6 * (Z / 0.02) ** 0.5 * (gamma * np.pi) ** 1.5 * (h / 0.05) ** 3 * (Mstar / 0.1)
 
     def _e_init(self):
         """
@@ -909,7 +915,7 @@ class PlanetesimalFormation(object):
             return np.zeros_like(R)
 
         Mp = self.planets.M * Mearth
-        Rp = self.planets.R * AU
+        Rp = self.planets.R
 
         e2_dot = np.zeros_like(R, dtype = float)
 
@@ -920,7 +926,7 @@ class PlanetesimalFormation(object):
             i_tilde = np.sqrt(i2) / (Mp_j / (3 * Mstar)) ** (1/3)
 
             # Distance modulation function
-            f_j = self._f_j(Rp_j, Mp_j)
+            f_j = self._f_j(Rp_j)
 
             e2_dot += f_j * Omega_k * Mp_j / (6 * np.pi * b_tilde * Mstar) * self._P_VS(e_tilde, i_tilde)
 
@@ -947,7 +953,7 @@ class PlanetesimalFormation(object):
             return np.zeros_like(R)
 
         Mp = self.planets.M * Mearth
-        Rp = self.planets.R * AU
+        Rp = self.planets.R
 
         i2_dot = np.zeros_like(R, dtype = float)
 
@@ -958,7 +964,7 @@ class PlanetesimalFormation(object):
             i_tilde = np.sqrt(i2) / (Mp_j / (3 * Mstar)) ** (1/3)
 
             # Distance modulation function
-            f_j = self._f_j(Rp_j, Mp_j)
+            f_j = self._f_j(Rp_j)
 
             i2_dot += f_j * Omega_k * Mp_j / (6 * np.pi * b_tilde * Mstar) * self._Q_VS(e_tilde, i_tilde)
 
@@ -1014,20 +1020,22 @@ class PlanetesimalFormation(object):
 
     # Eccentricity and inclination helper functions
 
-    def _f_j(self, Rp_j, Mp_j):
+    def _f_j(self, Rp_j):
         """
-        Computes the distance modulation function for embryo j (Kaufmann & Alibert 2023).
+        Computes the distance modulation function as a dirac delta function centered on the location of the embryo.
 
-        Rp: Location of protoplanet j (in AU)
-        Mp: Mass of protoplanet j (in Earth masses)
+        Rp: Location of embryo j (in AU)
         """
 
         disc = self.disc
 
         R = disc.R
-        rH = disc.star.r_Hill(R, Mp_j * Mearth / Msun)
 
-        return 1 / (1 + abs(R - Rp_j) / (5 * rH))
+        fj = np.zeros_like(R)
+        idx = np.argmin(np.abs(R - Rp_j))
+        fj[idx] = 1.0
+
+        return fj
 
     def _P_VS(self, e_tilde, i_tilde):
         """

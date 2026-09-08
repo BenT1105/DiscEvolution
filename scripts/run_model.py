@@ -491,7 +491,7 @@ def run_model(config):
     ## --------------
 
     try:
-        disc = DustGrowthTwoPop(grid, star, eos, disc_params['d2g'],
+        disc = DustGrowthTwoPop(grid, star, eos, disc_params['d2g'], disc_params['d2g_SI'],
             Sigma = Sigma, feedback = dust_growth_params["feedback"], Sc = disc_params["Sc"],
             f_ice = dust_growth_params['f_ice'], thresh = dust_growth_params['thresh'],
             uf_0 = dust_growth_params["uf_0"], uf_ice = dust_growth_params["uf_ice"], gas = gas,
@@ -567,6 +567,7 @@ def run_model(config):
         planet_model = Bitsch2015Model(
             disc,
             pb_gas_f = planet_params["pb_gas_f"],
+            f_plt = planet_params["f_plt"],
             migrate = planet_params["migrate"],
             pebble_acc = planet_params["pebble_accretion"],
             gas_acc = planet_params["gas_accretion"],
@@ -721,10 +722,11 @@ def run_model(config):
     cm2 = plt.get_cmap("viridis")
 
     ## Gradient colors also present to give options
-    color1 = iter(plt.cm.Blues(np.linspace(0.4, 1, 10)[::-1]))
-    color2 = iter(plt.cm.Greys(np.linspace(0.4, 1, 10)[::-1]))
-    color3 = iter(plt.cm.Greens(np.linspace(0.4, 1, 10)[::-1]))
-    color4 = iter(plt.cm.Reds(np.linspace(0.4, 1, 10)[::-1]))
+    n_times = len(times)
+    color1 = iter(plt.cm.Blues(np.linspace(0.4, 1, n_times)[::-1]))
+    color2 = iter(plt.cm.Greys(np.linspace(0.4, 1, n_times)[::-1]))
+    color3 = iter(plt.cm.Greens(np.linspace(0.4, 1, n_times)[::-1]))
+    color4 = iter(plt.cm.Reds(np.linspace(0.4, 1, n_times)[::-1]))
 
     ## ---------
     ## Run model
@@ -1139,7 +1141,7 @@ def run_model(config):
 
 if __name__ == "__main__":
     ## Load config parameters from JSON file
-    config_path = "/Users/ben/Downloads/Planet Formation/DiscEvolution Simulations/Config/20260810_full_accretion.json"
+    config_path = "/Users/ben/Downloads/Planet Formation/DiscEvolution Simulations/Config/20260905_full_accretion_psi0.01.json"
 
     if not os.path.exists(config_path):
         print(f"Error: config file not found: {config_path}", file = sys.stderr)
