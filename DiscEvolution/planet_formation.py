@@ -1598,6 +1598,56 @@ class Bitsch2015Model(object):
 
         return np.array(Xs_pla)
 
+    def pollution_boundary(self, R_pltsml):
+        """Compute the envelope mass boundary above which accreted planetesimals are fully destroyed. Based on Figure 9 from Mordasini et al 2015."""
+
+        ## Radius boundaries where power law segments meet in figure 9 of Mordasini et al 2015
+        _R_BREAK_POLLUTION = 2e5
+
+        M_env = np.full_like(R_pltsml, np.nan)
+
+        lower = R_pltsml <= _R_BREAK_POLLUTION
+        M_env[lower] = (5.12e6 / R_pltsml[lower]) ** (1 / 4.679)
+
+        upper = R_pltsml > _R_BREAK_POLLUTION
+        M_env[upper] = (R_pltsml[upper] / 3.29e6) ** (1 / 0.888)
+
+        return M_env
+
+    def fragmentation_boundary(self, R_pltsml):
+        """Compute the envelope mass boundary below which accreted planetesimals reach the core intact. Based on Figure 9 from Mordasini et al 2015."""
+
+        ## Radius boundaries where power law segments meet in figure 9 of Mordasini et al 2015
+        _R_BREAK_FRAG_1 = 1e5
+        _R_BREAK_FRAG_2 = 8e6
+
+        M_env = np.full_like(R_pltsml, np.nan)
+
+        lower = R_pltsml < _R_BREAK_FRAG_1
+        M_env[lower] = (1.12e2 / R_pltsml[lower]) ** (1 / 1.737)
+
+        middle = (R_pltsml >= _R_BREAK_FRAG_1) & (R_pltsml <= _R_BREAK_FRAG_2)
+        M_env[middle] = 0.02
+
+        upper = R_pltsml > _R_BREAK_FRAG_2
+        M_env[upper] = (R_pltsml[upper] / 6.84e7) ** (1 / 0.548)
+
+        return M_env
+
+    def f_env(self, M_env, R_pltsml):
+        """Compute the fraction of accreted planetesimal mass assigned to the envelope"""
+
+        M_frag = self.fragmentation_boundary(R_pltsml)
+        M_poll = self.pollution_boundary(R_pltsml)
+
+        eps = (np.log10(M_env) - np.log10(M_frag)) / (np.log10(M_poll) - np.log10(M_frag))
+        eps = np.clip(eps, 0, 1)
+
+        eps = np.where(R_pltsml < 3e4, 1.0, eps)
+        eps = np.where(R_pltsml > 1e8, 0.0, eps)
+
+        return eps
+
     def _growth_rates(self, R_p, M_core, M_env, M_Z, M_HHe):
         """
         Compute every term of the planet growth/migration ODE at a given state, and the masks that decide which terms are actually active.
@@ -1613,7 +1663,7 @@ class Bitsch2015Model(object):
             Mdot_pebble_env             : pebble accretion rate landing on the envelope
             Mdot_planetesimal_insitu    : Fortier et al 2013 rate, active where it exceeds the migration rate
             Mdot_planetesimal_migration : rate accreted while migrating, active where it exceeds the in-situ rate
-            f_pla                       : fraction of planetesimal accretion assigned to the envelope
+            f_env                       : fraction of planetesimal accretion assigned to the envelope
             Mcdot, Medot                : totals actually integrated into M_core, M_env
         """
 
@@ -1644,7 +1694,6 @@ class Bitsch2015Model(object):
         # Planetesimal accretion
         Mdot_planetesimal_insitu    = np.zeros_like(R_p)
         Mdot_planetesimal_migration = np.zeros_like(R_p)
-        f_pla = np.where(M_env >= 1.0, 1.0, 0.0) # fraction of planetesimal accretion assigned to the envelope
         use_migration = np.zeros_like(R_p, dtype = bool)
 
         if self._pla_acc:
@@ -1673,8 +1722,12 @@ class Bitsch2015Model(object):
 
         Mdot_planetesimal = Mdot_planetesimal_insitu + Mdot_planetesimal_migration
 
-        Mcdot = Mdot_pebble_core + Mdot_planetesimal * (1 - f_pla)
-        Medot = Mdot_gas + Mdot_pebble_env + Mdot_planetesimal * f_pla
+        # Planetesimal accretion fraction assigned to the envelope
+        R_pltsml = self._disc.interp(R_p, self._disc.R_planetesimal) * AU
+        f_env = self.f_env(M_env, R_pltsml)
+        
+        Mcdot = Mdot_pebble_core + Mdot_planetesimal * (1 - f_env)
+        Medot = Mdot_gas + Mdot_pebble_env + Mdot_planetesimal * f_env
 
         return {
             "Rdot": Rdot,
@@ -1683,7 +1736,7 @@ class Bitsch2015Model(object):
             "Mdot_pebble_env": Mdot_pebble_env,
             "Mdot_planetesimal_insitu": Mdot_planetesimal_insitu,
             "Mdot_planetesimal_migration": Mdot_planetesimal_migration,
-            "f_pla": f_pla,
+            "f_env": f_env,
             "Mcdot": Mcdot,
             "Medot": Medot}
 
@@ -1733,13 +1786,12 @@ class Bitsch2015Model(object):
                 Xs, Xg = self._compute_chem(R_p)
                 Xs_pla = self._compute_chem_planetesimal(R_p)
                 Nspec = Xs.shape[0]
-
+                f_env = rates["f_env"]
                 Mdot_planetesimal = rates["Mdot_planetesimal_insitu"] + rates["Mdot_planetesimal_migration"]
-                f_pla = rates["f_pla"]
                 Mg = np.maximum(rates["Mdot_gas"], 0)
 
-                dydt[ 3       *N:(3+  Nspec)*N] = (rates["Mdot_pebble_core"] * Xs + Mdot_planetesimal * (1 - f_pla) * Xs_pla).ravel()
-                dydt[(3+Nspec)*N:(3+2*Nspec)*N] = (rates["Mdot_pebble_env"] * Xs + Mg * Xg + Mdot_planetesimal * f_pla * Xs_pla).ravel()
+                dydt[ 3       *N:(3+  Nspec)*N] = (rates["Mdot_pebble_core"] * Xs + Mdot_planetesimal * (1 - f_env) * Xs_pla).ravel()
+                dydt[(3+Nspec)*N:(3+2*Nspec)*N] = (rates["Mdot_pebble_env"] * Xs + Mg * Xg + Mdot_planetesimal * f_env * Xs_pla).ravel()
 
             return dydt
 

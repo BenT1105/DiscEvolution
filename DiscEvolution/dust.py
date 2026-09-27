@@ -582,13 +582,14 @@ class PlanetesimalFormation(object):
         star (Star): The star object representing the central star.
         eos (EOS): The equation of state object.
         Sigma (ndarray): The surface density profile of the disc.
-        R_planetesimal (float): The radius of the planetesimal (km).
+        R_planetesimal (float): The radius of the planetesimal AU).
         M_planetesimal (float): The mass of the planetesimal (g).
         H (ndarray): The scale height profile of the disc.
         rho_pltsml (float): The material density of the planetesimal (g/cm^3), default=2.0.
         St_min (float): The minimum Stokes number.
         St_max (float): The maximum Stokes number.
         trap_lifetime (float): The lifetime of the trap in terms of number of local orbits.
+        pla_eff (float): The efficiency of planetesimal formation.
         
     Notes:
         If planetesimals are being included, pass disc._planetesimal = PlanetesimalFormation(...) after setting up the disc class.
