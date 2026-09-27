@@ -202,7 +202,7 @@ def run_model(config):
 
             # define a disk with new Sigma profile, use to scale R_d by disk mass
             disc = AccretionDisc(grid, star, eos, Sigma)
-            Rd_new= Rd*np.sqrt(Mdisk/(disc.Mtot() / Msun))
+            Rd_new = Rd * np.sqrt(Mdisk / (disc.Mtot() / Msun))
             Rd = 0.5 * (Rd + Rd_new) # average done to damp oscillations in numerical solution
 
             ## Define new Sigma profile given new Rd
@@ -362,6 +362,91 @@ def run_model(config):
                 grid = Grid(grid_params['rmin'], grid_params['rmax'], grid_params['nr'], spacing = grid_params['spacing'])
                 Sigma = np.split(Sigma, [cutoff[0]])[0]
 
+    elif grid_params['type'] == 'winds-psi':
+            ## For fixed alpha_SS, Rd and Mdisk, solve for psi_DW with disk winds
+            ## Assumes gamma = 1
+
+            ## extract params
+            Mdot = disc_params['Mdot'] # solar masses per year
+            Mdisk = disc_params['M']* Msun
+            psi = wind_params['psi_DW'] # initial guess
+            Rd = disc_params['Rd']
+            alpha_SS = disc_params['alpha'] # fixed viscous alpha
+            e_rad = wind_params["e_rad"]
+            Sc = disc_params["Sc"]
+            gamma = disc_params['gamma']
+            R = grid.Rc
+
+            if psi > 0:
+                lambda_DW = 1 / (2 * (1 - e_rad) * (3 / psi + 1)) + 1
+
+            else:
+                lambda_DW = np.inf
+
+            ## Initial guess for Sigma
+            Sigma_d = Mdisk / (2 * np.pi * (Rd * AU) ** 2)
+            xi = 0
+            Sigma = Sigma_d * (R / Rd) ** (xi - gamma) * np.exp(-(R / Rd) ** (2 - gamma))
+    
+            ## Define an initial disc and gas class to be used later
+            disc = AccretionDisc(grid, star, eos = None, Sigma = Sigma)
+            gas_temp = HybridWindModel(psi, lambda_DW)
+    
+            ## Scale Sigma by current Mtot just in case Sigma is not quite at the correct value to have the desired Mdisk (which often happens)
+            Mtot = disc.Mtot()
+            Sigma[:] *= Mdisk / Mtot
+    
+            for i in range(100):
+                ## Create the EOS
+                if eos_params["type"] == "SimpleDiscEOS":
+                    eos = SimpleDiscEOS(star, alpha_t = alpha_SS)
+    
+                elif eos_params["type"] == "LocallyIsothermalEOS":
+                    eos = LocallyIsothermalEOS(star, eos_params['h0'], eos_params['q'], alpha_SS)
+    
+                elif eos_params["type"] == "IrradiatedEOS":
+                    eos = IrradiatedEOS(star, alpha_t = alpha_SS, kappa = kappa, psi = psi, e_rad = e_rad, Tmax = eos_params["Tmax"])
+    
+                ## Update EOS with grid and Sigma
+                eos.set_grid(grid)
+                eos.update(0, Sigma)
+    
+                ## Define new disc
+                disc = AccretionDisc(grid, star, eos, Sigma)
+    
+                ## Find current Mdot in the disc given Sigma and current EOS
+                gas_temp = HybridWindModel(psi, lambda_DW)
+                vr = gas_temp.viscous_velocity(disc, Sigma)
+                Mdot_actual = disc.Mdot(vr)[0] # solar masses per year
+    
+                ## Scale psi_DW by Mdot
+                psi_new = psi * Mdot / Mdot_actual
+                psi = 0.5 * (psi + psi_new) # average done to damp oscillations in numerical solution
+    
+                ## Find new lambda_DW given new psi (alpha_SS stays fixed)
+                if psi > 0:
+                    lambda_DW = 1 / (2 * (1 - e_rad) * (3 / psi + 1)) + 1
+
+                else:
+                    lambda_DW = np.inf
+
+                if grid_params["smart_bining"]:
+                    ## If using smart binning, re-create the grid and Sigma profile
+                    cutoff = np.where(Sigma < 1e-7)[0]
+    
+                    if cutoff.shape == (0,):
+                        continue
+    
+                    grid_params['rmax'] = grid.Rc[cutoff[0]]
+                    grid_params['nr'] = cutoff[0]
+                    grid = Grid(grid_params['rmin'], grid_params['rmax'], grid_params['nr'], spacing = grid_params['spacing'])
+                    Sigma = np.split(Sigma, [cutoff[0]])[0]
+    
+            ## Write the solved psi_DW back into wind_params, since downstream code
+            ## (the HybridWindModel used for the actual run, and the output filename)
+            ## reads wind_params['psi_DW'] directly rather than this local variable
+            wind_params['psi_DW'] = psi
+
     elif grid_params['type'] == 'winds-Rd':
         ## For fixed alpha, Mdot and Mdisk, solve for Rd with disk winds
     
@@ -514,6 +599,9 @@ def run_model(config):
             chemistry = SimpleCOChemOberg()
 
         elif chemistry_params["chem_model"] == "Equilibrium":
+            chemistry = EquilibriumCOChemOberg(a = 1e-5, fix_ratios = False)
+
+        elif chemistry_params["chem_model"] == "Equilibrium_Fixed":
             chemistry = EquilibriumCOChemOberg(a = 1e-5, fix_ratios = True)
 
         elif chemistry_params["chem_model"] == "TimeDep":
@@ -625,6 +713,9 @@ def run_model(config):
     if alpha_SS > 5e-3:
         print ("Not Running model - alpha too high. Alpha, Rd, Mdisk = ", eos.alpha, Rd, disc.Mtot() / Msun)
 
+    elif psi < 0:
+        print ("Not Running model - psi_DW < 0. Alpha, Rd, Mdisk = ", eos.alpha, Rd, disc.Mtot() / Msun)
+
     else:
         print ("Running model. Alpha, Rd, Mdisk = ", eos.alpha, Rd, disc.Mtot() / Msun)
 
@@ -639,6 +730,14 @@ def run_model(config):
                    f"Rd{disc_params['Rd']:.0f}")
         outfile = f"{sim_params['output_dir']}{filename}.h5"
 
+        ## Actual initial disc properties (disc hasn't been evolved yet at this
+        ## point, so these are the t = 0 values -- matches run_model.py, which
+        ## must capture the equivalent quantities before its time loop runs)
+        vr_0 = disc._gas.viscous_velocity(disc, disc.Sigma)
+        Mdot_0 = disc.Mdot(vr_0[0])
+        Mdisk_0 = disc.Mtot() / Msun
+        Rd_0 = disc.RC()
+
         with h5py.File(outfile, "w") as h5f:
             ## Scalars
             h5f.create_dataset("t", shape = (0,), maxshape = (None,), dtype = "f8")
@@ -647,6 +746,15 @@ def run_model(config):
             h5f.create_dataset("Tc", shape = (0,), maxshape = (None,), dtype = "f8")
             h5f.create_dataset("Sigc", shape = (0,), maxshape = (None,), dtype = "f8")
             h5f.attrs["alpha_SS"] = float(alpha_SS)
+            h5f.attrs["psi_DW"] = float(wind_params["psi_DW"])
+            h5f.attrs["Mdot"] = float(Mdot_0)
+            h5f.attrs["Mdisk"] = float(Mdisk_0)
+            h5f.attrs["Rd"] = float(Rd_0)
+            h5f.attrs["pla_eff"] = float(planetesimal_params.get("pla_eff", np.nan))
+            h5f.attrs["f_plt"] = float(planet_params.get("f_plt", 400))
+
+            if chemistry_params["on"]:
+                h5f.attrs["chem_species"] = list(SimpleCOMolAbund(1).names)
 
             ## Per-planet extendable datasets
             if planet_params['include_planets']:
@@ -657,6 +765,7 @@ def run_model(config):
 
                 if planet_params["planetesimal_accretion_insitu"]:
                     grp_Mdot_pltsml = h5f.create_group("Mdot_planetesimal")
+                    grp_f_env = h5f.create_group("f_env")
                     grp_Miso_pltsml = h5f.create_group("M_iso_planetesimal")
 
                 if planet_params["pebble_accretion"]:
@@ -691,7 +800,7 @@ def run_model(config):
                         create_dataset_backfilled(grp, ip, n_backfill)
 
                     if planet_params["planetesimal_accretion_insitu"]:
-                        for grp in (grp_Mdot_pltsml, grp_Miso_pltsml):
+                        for grp in (grp_Mdot_pltsml, grp_f_env, grp_Miso_pltsml):
                             create_dataset_backfilled(grp, ip, n_backfill)
 
                     if planet_params["pebble_accretion"]:
@@ -732,11 +841,19 @@ def run_model(config):
             h5f.create_dataset("St_pebbles", shape = (0, nR), maxshape = (None, nR), dtype = "f8")
             h5f.create_dataset("T", shape = (0, nR), maxshape = (None, nR), dtype = "f8")
 
+            if chemistry_params["on"]:
+                nSpec = disc.chem.ice.data.shape[0]
+                h5f.create_dataset("gas_chem", shape = (0, nSpec, nR), maxshape = (None, nSpec, nR), dtype = "f8")
+                h5f.create_dataset("ice_chem", shape = (0, nSpec, nR), maxshape = (None, nSpec, nR), dtype = "f8")
+
             if planetesimal_params['active']:
                 h5f.create_dataset("Sigma_planetesimals", shape = (0, nR), maxshape = (None, nR), dtype = "f8")
                 h5f.create_dataset("St_planetesimals", shape = (0, nR), maxshape = (None, nR), dtype = "f8")
                 h5f.create_dataset("e_planetesimals", shape = (0, nR), maxshape = (None, nR), dtype = "f8")
                 h5f.create_dataset("i_planetesimals", shape = (0, nR), maxshape = (None, nR), dtype = "f8")
+
+                if chemistry_params["on"]:
+                    h5f.create_dataset("planetesimal_ice_chem", shape = (0, nSpec, nR), maxshape = (None, nSpec, nR), dtype = "f8")
 
                 if planetesimal_params['drag'] or planetesimal_params['VS_embryo'] or planetesimal_params['VS_pltsml'] or planetesimal_params['DF']:
                     h5f.create_dataset("de2_dt", shape = (0, nR), maxshape = (None, nR), dtype = "f8")
@@ -802,6 +919,10 @@ def run_model(config):
                         d.resize(1, axis = 0)
                         d[0] = initial_rates["Mdot_planetesimal_insitu"][ip] * yr
 
+                        d = grp_f_env[str(ip)]
+                        d.resize(1, axis = 0)
+                        d[0] = initial_rates["f_env"][ip]
+
                         d = grp_Miso_pltsml[str(ip)]
                         d.resize(1, axis = 0)
                         d[0] = planet_model._pla_acc.M_iso_pltsml(planet.R)
@@ -860,6 +981,15 @@ def run_model(config):
                     d.resize(1, axis = 0)
                     d[0, :] = arr
 
+                if chemistry_params["on"]:
+                    for name, arr in [
+                        ("gas_chem", disc.chem.gas.data),
+                        ("ice_chem", disc.chem.ice.data)]:
+
+                        d = h5f[name]
+                        d.resize(1, axis = 0)
+                        d[0, :, :] = arr
+
                 if planetesimal_params['active']:
                     for name, arr in [
                         ("Sigma_planetesimals", disc.Sigma_D[2]),
@@ -870,6 +1000,11 @@ def run_model(config):
                         d = h5f[name]
                         d.resize(1, axis = 0)
                         d[0, :] = arr
+
+                    if chemistry_params["on"] and disc._planetesimal.ice_abund is not None:
+                        d = h5f["planetesimal_ice_chem"]
+                        d.resize(1, axis = 0)
+                        d[0, :, :] = disc._planetesimal.ice_abund.data
 
                     _e2, _i2 = disc._planetesimal._e2, disc._planetesimal._i2
                     for name, active_flag, fn_e, fn_i in [
@@ -1164,6 +1299,10 @@ def run_model(config):
                                 d.resize(d.shape[0] + 1, axis = 0)
                                 d[-1] = planet_model.rates["Mdot_planetesimal_insitu"][ip] * yr
 
+                                d = grp_f_env[str(ip)]
+                                d.resize(d.shape[0] + 1, axis = 0)
+                                d[-1] = planet_model.rates["f_env"][ip]
+
                                 d = grp_Miso_pltsml[str(ip)]
                                 d.resize(d.shape[0] + 1, axis = 0)
                                 d[-1] = planet_model._pla_acc.M_iso_pltsml(planet.R)
@@ -1217,11 +1356,19 @@ def run_model(config):
                 h5f["St_pebbles"].resize(s + 1, axis = 0);       h5f["St_pebbles"][s, :]     = stokes[1]
                 h5f["T"].resize(s + 1, axis = 0);                h5f["T"][s, :]              = disc.T
 
+                if chemistry_params["on"]:
+                    h5f["gas_chem"].resize(s + 1, axis = 0); h5f["gas_chem"][s, :, :] = disc.chem.gas.data
+                    h5f["ice_chem"].resize(s + 1, axis = 0); h5f["ice_chem"][s, :, :] = disc.chem.ice.data
+
                 if planetesimal_params['active']:
                     h5f["Sigma_planetesimals"].resize(s + 1, axis = 0);   h5f["Sigma_planetesimals"][s, :] = disc.Sigma_D[2]
                     h5f["St_planetesimals"].resize(s + 1, axis = 0);      h5f["St_planetesimals"][s, :]    = stokes[2]
                     h5f["e_planetesimals"].resize(s + 1, axis = 0);       h5f["e_planetesimals"][s, :]     = disc._planetesimal.e
                     h5f["i_planetesimals"].resize(s + 1, axis = 0);       h5f["i_planetesimals"][s, :]     = disc._planetesimal.i
+
+                    if chemistry_params["on"] and disc._planetesimal.ice_abund is not None:
+                        h5f["planetesimal_ice_chem"].resize(s + 1, axis = 0)
+                        h5f["planetesimal_ice_chem"][s, :, :] = disc._planetesimal.ice_abund.data
 
                     _e2, _i2 = disc._planetesimal._e2, disc._planetesimal._i2
                     for name, active_flag, fn_e, fn_i in [
