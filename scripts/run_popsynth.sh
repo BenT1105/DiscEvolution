@@ -16,7 +16,7 @@
 #
 # To run this fully in the background, detached from your terminal (so it
 # keeps going after you close your laptop or log out of an ssh session):
-#   nohup setsid ./run_popsynth_student.sh > master.log 2>&1 &
+#   nohup setsid ./run_popsynth.sh > master.log 2>&1 &
 
 set -euo pipefail
 
@@ -24,38 +24,39 @@ set -euo pipefail
 # 1. Parameter grid. Edit these six lines to change what gets run.
 # ---------------------------------------------------------------------------
 
-M_VALUES="0.05 0.075 0.1 0.125 0.15"
-MDOT_VALUES="1e-9 3e-9 1e-8 3e-8 1e-7 3e-7"
-RD_VALUES="50 100 150 200"
-PLA_EFF_VALUES="0.1 0.3 0.5 0.7 0.9"
-F_PLT_VALUES="0.1 0.3 0.5 0.7 0.9"
-ALPHA_VALUES="1e-5 3e-5 1e-4 3e-4 1e-3"
+M_VALUES="0.05 0.1 0.15"
+MDOT_VALUES="3e-9 1e-8 3e-8 1e-7 3e-7"
+RD_VALUES="50 100 200"
+PLA_EFF_VALUES="0.1"
+F_PLT_VALUES="400"
+ALPHA_VALUES="1e-5"
 
 # ---------------------------------------------------------------------------
 # 2. Run name, config file, where output/figures/logs go, and how many runs
 #    at once. Output and figure files are written under ./$RUN_NAME/.
 # ---------------------------------------------------------------------------
 
-RUN_NAME="popsynth"
-PLOT=false
+RUN_NAME="testmodel"
+PLOT=true
 
 CONFIG_NAME="popsynth_default_config.json"
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-CONFIG_FILE="$SCRIPT_DIR/config/$CONFIG_NAME"
-OUTDIR="${DISCEVOLUTION_OUTPUT:-$SCRIPT_DIR/$RUN_NAME/output}"
-FIGDIR="${DISCEVOLUTION_FIGURE_DIR:-$SCRIPT_DIR/$RUN_NAME/figure}"
-LOGDIR="$SCRIPT_DIR/logs"
+CONFIG_FILE="$SCRIPT_DIR/../configs/$CONFIG_NAME"
+OUTDIR="${DISCEVOLUTION_OUTPUT:-/home/bentobin/simulations/$RUN_NAME/output}"
+FIGDIR="${DISCEVOLUTION_FIGURE_DIR:-/home/bentobin/simulations/$RUN_NAME/figure}"
+LOGDIR="/home/bentobin/simulations/$RUN_NAME/logs"
 MASTER_LOG="$LOGDIR/${RUN_NAME}_log.csv"
-NPROC=8
+NPROC=6
 
 mkdir -p "$LOGDIR" "$OUTDIR" "$FIGDIR"
 
 # One master CSV log for the whole sweep (separate from the per-run .out/.err
 # files also in $LOGDIR): a row per run mapping its output filename back to
-# the (M, Mdot, Rd, pla_eff, f_plt, alpha) that produced it. Truncated fresh
-# each launch, since this script always relaunches the full grid anyway.
-echo "filename,M,Mdot,Rd,pla_eff,f_plt,alpha" > "$MASTER_LOG"
+# the (M, Mdot, Rd, pla_eff, f_plt, alpha) that produced it, plus whether it
+# ran successfully (complete = True/False; False covers runs that crashed or
+# were aborted).
+echo "filename,M,Mdot,Rd,pla_eff,f_plt,alpha,complete" > "$MASTER_LOG"
 
 N_TOTAL=$(( $(wc -w <<< "$M_VALUES") * $(wc -w <<< "$MDOT_VALUES") * $(wc -w <<< "$RD_VALUES") \
           * $(wc -w <<< "$PLA_EFF_VALUES") * $(wc -w <<< "$F_PLT_VALUES") * $(wc -w <<< "$ALPHA_VALUES") ))
@@ -101,13 +102,16 @@ run_one() {
     local extra_args=(--output_dir "$OUTDIR" --output_filename "$tag" --figure_dir "$FIGDIR")
     [[ "$PLOT" == true ]] && extra_args+=(--plot)
 
+    # Python exits non-zero if the run crashed, was aborted, or was skipped
+    local complete=True
+
     echo "[$(date +%T)] Launching $tag (M=$M Mdot=$Mdot Rd=$Rd pla_eff=$pla_eff f_plt=$f_plt alpha=$alpha; skips itself if already done -- see .out log)"
     python3 "$SCRIPT_DIR/run_model_popsynth.py" --config "$CONFIG_FILE" \
         --M "$M" --Mdot "$Mdot" --Rd "$Rd" --pla_eff "$pla_eff" --f_plt "$f_plt" --alpha "$alpha" \
         "${extra_args[@]}" \
-        > "$LOGDIR/${tag}.out" 2> "$LOGDIR/${tag}.err"
+        > "$LOGDIR/${tag}.out" 2> "$LOGDIR/${tag}.err" || complete=False
 
-    printf '%s,%s,%s,%s,%s,%s,%s\n' "${tag}.h5" "$M" "$Mdot" "$Rd" "$pla_eff" "$f_plt" "$alpha" >> "$MASTER_LOG"
+    printf '%s,%s,%s,%s,%s,%s,%s,%s\n' "${tag}.h5" "$M" "$Mdot" "$Rd" "$pla_eff" "$f_plt" "$alpha" "$complete" >> "$MASTER_LOG"
 }
 
 export -f index_of run_one
@@ -131,7 +135,7 @@ else
             for f_plt in $F_PLT_VALUES; do
               for alpha in $ALPHA_VALUES; do
                 run_one "$M" "$Mdot" "$Rd" "$pla_eff" "$f_plt" "$alpha" &
-                ((count++))
+                count=$((count + 1))
                 if ((count % NPROC == 0)); then wait; fi
               done
             done
