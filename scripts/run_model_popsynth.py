@@ -368,6 +368,8 @@ def create_output_file(outfile, grid, config, Nchem, alpha_SS, psi_DW, Mdot_0, M
     h5f.attrs["Rd"] = float(Rd_0)
     h5f.attrs["pla_eff"] = float(planetesimal_params.get("pla_eff", np.nan))
     h5f.attrs["f_plt"] = float(planet_params.get("f_plt", 400))
+    h5f.attrs["complete"] = False
+    h5f.attrs["aborted"] = False
 
     # ---- scalar time series ----
     for name in ["t", "disk_Mdot_star", "disk_Mass", "Tc", "Sigc"]:
@@ -566,6 +568,10 @@ def run_model(config, cli_output_dir=None, cli_output_filename=None):
                 print(f"Skipping -- output already complete: {outfile}")
                 return outfile
 
+            if existing.attrs.get("aborted", False):
+                print(f"Skipping -- output was previously aborted: {outfile}")
+                sys.exit(1)
+
         print(f"Output file exists but is incomplete; re-running: {outfile}")
 
     # ---- 2. grid + star + time grid ----
@@ -582,12 +588,12 @@ def run_model(config, cli_output_dir=None, cli_output_filename=None):
     if alpha_SS > 5e-3:
         print(f"Not running model - alpha too high. alpha_SS={alpha_SS:.3e}, "
               f"Rd={disc_params['Rd']}, Mdisk={disc.Mtot()/Msun:.4g} Msun")
-        return None
+        sys.exit(1)
 
     if psi < 0.0:
         print(f"Not running model - negative wind torque. alpha_SS={alpha_SS:.3e}, "
               f"Rd={disc_params['Rd']}, Mdisk={disc.Mtot()/Msun:.4g} Msun")
-        return None
+        sys.exit(1)
 
     print(f"Running model. alpha_SS={alpha_SS:.3e}, Rd={disc_params['Rd']}, "
           f"Mdisk={disc.Mtot()/Msun:.4g} Msun")
@@ -615,9 +621,9 @@ def run_model(config, cli_output_dir=None, cli_output_filename=None):
 
     try:
         _integrate(h5f, groups, disc, grid, planets, planet_model, gas, dust, diffuse, chemistry, times, pending_SI, Nchem, config)
-        
-    finally:
         h5f.attrs["complete"] = True
+
+    finally:
         h5f.close()
 
     print(f"Wrote {outfile}")
@@ -671,6 +677,11 @@ def _integrate(h5f, groups, disc, grid, planets, planet_model, gas, dust, diffus
         write_disc_snapshot(h5f, disc, 0.0, planetesimal_params, chemistry_params)
     
     h5f.flush()
+
+    # Used to estimate the wall-clock time remaining
+    loop_start_time = time.time()
+    t_end = times[-1]
+    abort_timescale = config['simulation'].get('abort_timescale', 10)   # hours
 
     t, n = 0.0, 0
     for ti in times:
@@ -750,6 +761,19 @@ def _integrate(h5f, groups, disc, grid, planets, planet_model, gas, dust, diffus
 
             if (n % 1000) == 0:
                 print(f"Nstep {n} | t = {t/(1e6*yr):.4g} Myr | dt = {dt/yr:.3g} yr", flush=True)
+
+            # --- estimate time remaining ---
+            if (n % 5000) == 0:
+                elapsed = time.time() - loop_start_time
+                time_remaining = elapsed * (t_end - t) / t   # seconds
+
+                print(f"Estimated time remaining: {time_remaining/3600:.2f} hr "
+                      f"({t/(1e6*yr):.3f} / {t_end/(1e6*yr):.3f} Myr done in {elapsed/3600:.2f} hr)", flush=True)
+
+                if time_remaining > abort_timescale * 3600:
+                    print(f"Aborting simulation - estimated time remaining exceeds abort_timescale ({abort_timescale} hr).", flush=True)
+                    h5f.attrs["aborted"] = True
+                    sys.exit(1)
 
             # --- stream scalar + per-planet series every 5 steps ---
             if (n % 5) == 0:
@@ -1008,8 +1032,7 @@ if __name__ == "__main__":
     ## Directory overrides
     parser.add_argument("--config", type=str, required=True, help="Path to configuration JSON file")
     parser.add_argument("--output_dir", type=str, default=None, help="Override output directory")
-    parser.add_argument("--output_filename", type=str, default=None,
-                         help="Override output file name")
+    parser.add_argument("--output_filename", type=str, default=None, help="Override output file name")
     parser.add_argument("--plot", action="store_true", help="Produce a diagnostic plot PNG after the run completes")
     parser.add_argument("--figure_dir", type=str, default=None, help="Directory to save the diagnostic plot PNG")
 
@@ -1052,17 +1075,13 @@ if __name__ == "__main__":
     outfile = run_model(config, cli_output_dir=args.output_dir, cli_output_filename=args.output_filename)
 
     if args.plot:
-        if outfile is None:
-            print("Skipping --plot: no output file was written")
-            
-        else:
-            # Figure directory precedence: --figure_dir CLI flag > config.json
-            # ('simulation.figure_dir') > DISCEVOLUTION_FIGURE_DIR env var >
-            # ./figure within the current working directory.
-            fig_dir = (args.figure_dir
-                       or config['simulation'].get('figure_dir')
-                       or os.environ.get('DISCEVOLUTION_FIGURE_DIR')
-                       or os.path.join(os.getcwd(), 'figure'))
-            plot_diagnostics(outfile, fig_dir=fig_dir)
+        # Figure directory precedence: --figure_dir CLI flag > config.json
+        # ('simulation.figure_dir') > DISCEVOLUTION_FIGURE_DIR env var >
+        # ./figure within the current working directory.
+        fig_dir = (args.figure_dir
+                   or config['simulation'].get('figure_dir')
+                   or os.environ.get('DISCEVOLUTION_FIGURE_DIR')
+                   or os.path.join(os.getcwd(), 'figure'))
+        plot_diagnostics(outfile, fig_dir=fig_dir)
 
     print(f"Duration: {time.strftime('%H:%M:%S', time.gmtime(time.time() - start_time))}")

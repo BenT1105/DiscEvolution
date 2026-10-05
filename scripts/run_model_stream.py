@@ -8,7 +8,7 @@ import numpy as np
 import matplotlib.pyplot as plt
 
 ## Add the path to the DiscEvolution directory
-sys.path.append('/Users/ben/Downloads/Planet Formation/Code/DiscEvolution Core Accretion')
+sys.path.append('/Users/ben/Downloads/Planet Formation/Code/DiscEvolution')
 
 ## import DiscEvolution modules
 from DiscEvolution.constants import *
@@ -1151,6 +1151,11 @@ def run_model(config):
             ## Main integration loop
             ## ---------------------
 
+            ## Used to estimate the wall-clock time remaining
+            loop_start_time = time.time()
+            t_end = times[-1]
+            abort_timescale = sim_params.get('abort_timescale', 10) # hours
+
             for ti in times:
                 while t < ti:
                     ## Find timestep given gas and dust maximum timesteps
@@ -1264,6 +1269,18 @@ def run_model(config):
                         print('\rNstep: {}'.format(n), flush = "True")
                         print('\rTime: {} Myr'.format(t / (1.e6 * 2 * np.pi)), flush = "True")
                         print('\rdt: {} yr'.format(dt / (2 * np.pi)), flush = "True")
+
+                    if (n % 5000) == 0:
+                        ## Estimate the time remaining by assuming the rest of the simulation proceeds at the average rate so far
+                        elapsed = time.time() - loop_start_time
+                        time_remaining = elapsed * (t_end - t) / t # seconds
+
+                        print('Estimated time remaining: {:.2f} hr ({:.3f} / {:.3f} Myr done in {:.2f} hr)'.format(
+                            time_remaining / 3600, t / (1.e6 * 2 * np.pi), t_end / (1.e6 * 2 * np.pi), elapsed / 3600), flush = True)
+
+                        if time_remaining > abort_timescale * 3600:
+                            print(f"Aborting simulation - estimated time remaining exceeds abort_timescale ({abort_timescale} hr).", flush = True)
+                            sys.exit(1)
 
                     ## Stream scalar series every 5 timesteps
                     if n % 5 == 0:
@@ -1401,7 +1418,7 @@ def run_model(config):
 
 if __name__ == "__main__":
     ## Load config parameters from JSON file
-    config_path = "/Users/ben/Downloads/Planet Formation/DiscEvolution Simulations/Config/20260905_full_accretion_psi0.01.json"
+    config_path = "/Users/ben/Downloads/Planet Formation/DiscEvolution Simulations/Config/popsynth_default_config.json"
 
     if not os.path.exists(config_path):
         print(f"Error: config file not found: {config_path}", file = sys.stderr)

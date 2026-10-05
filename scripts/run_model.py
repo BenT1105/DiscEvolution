@@ -9,7 +9,7 @@ import matplotlib.pyplot as plt
 import matplotlib.cm as cm
 
 ## Add the path to the DiscEvolution directory
-sys.path.append('/Users/ben/Downloads/Planet Formation/Code/DiscEvolution Core Accretion')
+sys.path.append('/Users/ben/Downloads/Planet Formation/Code/DiscEvolution')
 
 ## import DiscEvolution modules
 from DiscEvolution.constants import *
@@ -877,6 +877,12 @@ def run_model(config):
 
     else:   
         print ("Running model. Alpha, Rd, Mdisk = ", eos.alpha, Rd, disc.Mtot() / Msun)
+
+        ## Used to estimate the wall-clock time remaining
+        loop_start_time = time.time()
+        t_end = times[-1]
+        abort_timescale = sim_params.get('abort_timescale', 10) # hours
+
         for ti in times:
             while t < ti:
                 ## Find timestep given gas and dust maximum timesteps
@@ -987,7 +993,19 @@ def run_model(config):
                     # print('\rTime: {} Myr'.format(t / (1.e6* 2 * np.pi)), end = "", flush = "True")
                     print('\rTime: {} Myr'.format(t / (1.e6 * 2 * np.pi)), flush = "True")
                     print('\rdt: {} yr'.format(dt / (2 * np.pi)), flush = "True")
-                
+
+                if (n % 5000) == 0:
+                    ## Estimate the time remaining by assuming the rest of the simulation proceeds at the average rate so far
+                    elapsed = time.time() - loop_start_time
+                    time_remaining = elapsed * (t_end - t) / t # seconds
+
+                    print('Estimated time remaining: {:.2f} hr ({:.3f} / {:.3f} Myr done in {:.2f} hr)'.format(
+                        time_remaining / 3600, t / (1.e6 * 2 * np.pi), t_end / (1.e6 * 2 * np.pi), elapsed / 3600), flush = True)
+
+                    if time_remaining > abort_timescale * 3600:
+                        print(f"Aborting simulation - estimated time remaining exceeds abort_timescale ({abort_timescale} hr).", flush = True)
+                        sys.exit(1)
+
                 if n % 5 == 0:
                     time_keeper.append(t / (2 * np.pi))
 
