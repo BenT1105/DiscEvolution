@@ -1,6 +1,6 @@
 """
 run_model_popsynth.py
-=========================
+=====================
 
 A compact, heavily-commented walkthrough of a single DiscEvolution run,
 written for someone seeing this codebase for the first time.
@@ -38,7 +38,19 @@ PIPELINE OVERVIEW
     6. Place planets and attach the Bitsch2015Model (optional).
     7. Turn on planetesimal formation + dynamics (optional).
     8. Open the HDF5 file, create every (growable) dataset, write t = 0.
-    9. Integrate forward, streaming a row per snapshot as we go.
+    9. Integrate forward, writing a row to the file every 5 steps.
+
+OUTPUT LAYOUT
+-------------
+Per-planet quantities are 2D datasets with one row per planet and one column
+per recorded time:
+
+    Mcs, Mes, Rp, ...   (N_planets, N_rows)           h5f["Mcs"][3] is planet 3
+    X_cores, X_envs     (N_planets, N_species, N_rows)
+    t, disk_Mass, ...   (N_rows,)
+    Sigma_G, T, ...     (N_snapshots, N_radius)
+
+A planet inserted part-way through the run is NaN before its insertion.
 """
 
 import os
@@ -266,20 +278,26 @@ def build_planetesimals(disc, planets, planetesimal_params):
         i_init=planetesimal_params.get('i_init', 'eq'))
 
 # ============================================================================
-# HDF5 streaming output
+# HDF5 streaming output (2D per-planet layout)
 # ============================================================================
 
-# Every quantity is a "growable" dataset: created with length 0 along axis 0
-# and extended one row per snapshot with grow_and_set(). This keeps the file
-# readable whether the run is 10 steps or 10 million, and keeps the dataset
-# names stable so the analysis notebooks that key off them keep working.
+# A row is written to the file every 5 steps, as it is recorded. To keep that
+# cheap, each per-planet quantity is ONE dataset holding every planet, shape
+# (N_planets, N_rows), rather than one dataset per planet: HDF5 has a fixed
+# overhead per write call, so a row costs ~20 writes however many planets
+# there are, instead of ~24 writes per planet.
 
-def grow_and_set(dset, value):
-    """Append one row to a growable HDF5 dataset."""
+# The per-planet datasets are created with a row for every planet listed in
+# the config and filled with NaN, so a planet that is inserted late (mass
+# "SI") is automatically NaN before its insertion. At the end of the run they
+# are trimmed to the planets that were actually inserted.
 
-    n = dset.shape[0]
-    dset.resize(n + 1, axis=0)
-    dset[n] = value
+SCALAR_NAMES = ["t", "disk_Mdot_star", "disk_Mass", "Tc", "Sigc"]
+FLUSH_INTERVAL = 5000   # steps between h5f.flush() calls (rows are written every 5 steps regardless)
+
+
+class SimulationAborted(Exception):
+    """Raised when the estimated time remaining exceeds abort_timescale."""
 
 
 def _ei_mechanisms(planetesimal_params):
@@ -308,50 +326,40 @@ def output_filename(config):
             f"_M{disc_params['M']:.1e}_Rd{disc_params['Rd']:.1e}.h5")
 
 
-def _make_backfilled(grp, key, n_backfill):
-    """Create a growable per-planet dataset, backfilled with NaN if the run
-    is already underway (used when an "SI" planet is inserted late)."""
+def _planet_series_names(planet_params):
+    """Names of the per-planet time series tracked for this configuration."""
 
-    d = grp.create_dataset(str(key), shape=(0,), maxshape=(None,), dtype="f8", chunks=(1024,))
-    if n_backfill:
-        d.resize(n_backfill, axis=0)
-        d[:] = np.nan
-
-    return d
-
-
-def create_planet_datasets(h5f, groups, planet_params, chemistry_params, Nchem, ip):
-    """Create every per-planet dataset for planet index `ip`."""
-
-    n_backfill = h5f["t"].shape[0]
-
-    for name in ("Mcs", "Mes", "Rp", "disk_Mdot_p"):
-        _make_backfilled(groups[name], ip, n_backfill)
-
+    names = ["Mcs", "Mes", "Rp", "disk_Mdot_p"]
     if planet_params["planetesimal_accretion_insitu"]:
-        for name in ("Mdot_planetesimal", "f_env", "M_iso_planetesimal"):
-            _make_backfilled(groups[name], ip, n_backfill)
+        names += ["Mdot_planetesimal", "f_env", "M_iso_planetesimal"]
 
     if planet_params["pebble_accretion"]:
-        for name in ("Mdot_pebble_core", "Mdot_pebble_env", "M_iso_pebble"):
-            _make_backfilled(groups[name], ip, n_backfill)
+        names += ["Mdot_pebble_core", "Mdot_pebble_env", "M_iso_pebble"]
 
     if planet_params["migrate"] and planet_params["planetesimal_accretion_migrate"]:
-        _make_backfilled(groups["Mdot_migration"], ip, n_backfill)
+        names += ["Mdot_migration"]
 
     if planet_params["gas_accretion"]:
-        _make_backfilled(groups["Mdot_gas"], ip, n_backfill)
+        names += ["Mdot_gas"]
 
-    if chemistry_params["on"]:
-        pgrp_c = groups["X_cores"].create_group(str(ip))
-        pgrp_e = groups["X_envs"].create_group(str(ip))
-        for js in range(Nchem):
-            _make_backfilled(pgrp_c, js, n_backfill)
-            _make_backfilled(pgrp_e, js, n_backfill)
+    return names
 
 
-def create_output_file(outfile, grid, config, Nchem, alpha_SS, psi_DW, Mdot_0, Mdisk_0, Rd_0):
-    """Create the HDF5 file and every dataset/group. Returns (h5f, groups)."""
+def _time_chunk(values_per_row):
+    """Number of time rows per HDF5 chunk, keeping a chunk at ~256 kB so it
+    always fits in h5py's 1 MB per-dataset chunk cache."""
+
+    return max(16, min(1024, 32768 // max(values_per_row, 1)))
+
+
+def create_output_file(outfile, grid, config, Nchem, attrs):
+    """
+    Create the HDF5 file and every dataset.
+
+    Returns (h5f, dsets), where `dsets` maps the name of every time-series
+    dataset to its open h5py handle (so write_row() does not have to look
+    them up by name on every call).
+    """
 
     planet_params = config['planets']
     chemistry_params = config['chemistry']
@@ -361,41 +369,31 @@ def create_output_file(outfile, grid, config, Nchem, alpha_SS, psi_DW, Mdot_0, M
 
     h5f = h5py.File(outfile, "w")
 
-    h5f.attrs["alpha_SS"] = float(alpha_SS)
-    h5f.attrs["psi_DW"] = float(psi_DW)
-    h5f.attrs["Mdot"] = float(Mdot_0)
-    h5f.attrs["Mdisk"] = float(Mdisk_0)
-    h5f.attrs["Rd"] = float(Rd_0)
-    h5f.attrs["pla_eff"] = float(planetesimal_params.get("pla_eff", np.nan))
-    h5f.attrs["f_plt"] = float(planet_params.get("f_plt", 400))
+    for key, value in attrs.items():
+        h5f.attrs[key] = value
+
     h5f.attrs["complete"] = False
     h5f.attrs["aborted"] = False
 
-    # ---- scalar time series ----
-    for name in ["t", "disk_Mdot_star", "disk_Mass", "Tc", "Sigc"]:
-        h5f.create_dataset(name, shape=(0,), maxshape=(None,), dtype="f8")
+    # ---- scalar time series, shape (N_rows,) ----
+    dsets = {}
+    for name in SCALAR_NAMES:
+        dsets[name] = h5f.create_dataset(name, shape=(0,), maxshape=(None,), dtype="f8", chunks=(1024,))
 
-    # ---- per-planet groups (datasets are created per planet, below) ----
-    groups = {}
+    # ---- per-planet time series, shape (N_planets, N_rows) ----
     if planet_params['include_planets']:
-        wanted = ["Mcs", "Mes", "Rp", "disk_Mdot_p"]
-        if planet_params["planetesimal_accretion_insitu"]:
-            wanted += ["Mdot_planetesimal", "f_env", "M_iso_planetesimal"]
+        n_max = len(planet_params['Rp'])      # every planet that could be inserted
+        n_chunk = max(n_max, 1)
 
-        if planet_params["pebble_accretion"]:
-            wanted += ["Mdot_pebble_core", "Mdot_pebble_env", "M_iso_pebble"]
+        for name in _planet_series_names(planet_params):
+            dsets[name] = h5f.create_dataset(name, shape=(n_max, 0), maxshape=(None, None), dtype="f8",
+                                             chunks=(n_chunk, _time_chunk(n_chunk)), fillvalue=np.nan)
 
-        if planet_params["migrate"] and planet_params["planetesimal_accretion_migrate"]:
-            wanted += ["Mdot_migration"]
-
-        if planet_params["gas_accretion"]:
-            wanted += ["Mdot_gas"]
-
+        # ---- per-planet abundances, shape (N_planets, N_species, N_rows) ----
         if chemistry_params["on"]:
-            wanted += ["X_cores", "X_envs"]
-
-        for name in wanted:
-            groups[name] = h5f.create_group(name)
+            for name in ("X_cores", "X_envs"):
+                dsets[name] = h5f.create_dataset(name, shape=(n_max, Nchem, 0), maxshape=(None, Nchem, None), dtype="f8",
+                                                 chunks=(n_chunk, Nchem, _time_chunk(n_chunk * Nchem)), fillvalue=np.nan)
 
     # ---- grid (written once) ----
     h5f.create_dataset("R", data=grid.Rc)
@@ -428,49 +426,106 @@ def create_output_file(outfile, grid, config, Nchem, alpha_SS, psi_DW, Mdot_0, M
                 h5f.create_dataset(f"de2_dt_{name}", shape=(0, nR), maxshape=(None, nR), dtype="f8")
                 h5f.create_dataset(f"di2_dt_{name}", shape=(0, nR), maxshape=(None, nR), dtype="f8")
 
-    return h5f, groups
+    return h5f, dsets
 
 
-def write_planet_row(groups, planets, planet_model, disc, grid, disk_Mdot, rates, config):
+def write_row(dsets, t_years, disc, grid, disk_Mdot, planets, planet_model, rates, config):
     """
-    Append one row to every per-planet dataset.
+    Append one row (one time) to every scalar and per-planet dataset.
 
     `rates` is the growth-rate dict for this instant: at t = 0 it comes from
     planet_model._growth_rates(...) (no integrate() has run yet); during the
     loop it is planet_model.rates, the rates that drove the last integrate().
+    Every per-planet value is an array over the planets inserted so far, so
+    each quantity is written with a single call.
     """
 
     planet_params = config['planets']
     chemistry_params = config['chemistry']
 
-    for ip, planet in enumerate(planets):
-        grow_and_set(groups["Mcs"][str(ip)], planet.M_core.copy())
-        grow_and_set(groups["Mes"][str(ip)], planet.M_env.copy())
-        grow_and_set(groups["Rp"][str(ip)], planet.R.copy())
-        grow_and_set(groups["disk_Mdot_p"][str(ip)], np.interp(planet.R, grid.Rc[0:-1], disk_Mdot))
+    n = dsets["t"].shape[0]     # index of the new row
+
+    # ---- scalars ----
+    scalars = {
+        "t": t_years,
+        "disk_Mdot_star": disk_Mdot[0],
+        "disk_Mass": disc.Mtot(),
+        "Tc": disc.T[0],
+        "Sigc": disc.Sigma[0],
+    }
+
+    for name, value in scalars.items():
+        dsets[name].resize(n + 1, axis=0)
+        dsets[name][n] = value
+
+    if not planet_params['include_planets']:
+        return
+
+    # ---- per-planet values, each an array of length planets.N ----
+    N = planets.N
+    row = {}
+    if N > 0:
+        row["Mcs"] = planets.M_core
+        row["Mes"] = planets.M_env
+        row["Rp"] = planets.R
+        row["disk_Mdot_p"] = np.interp(planets.R, grid.Rc[0:-1], disk_Mdot)
 
         if planet_params["planetesimal_accretion_insitu"]:
-            grow_and_set(groups["Mdot_planetesimal"][str(ip)], rates["Mdot_planetesimal_insitu"][ip] * yr)
-            grow_and_set(groups["f_env"][str(ip)], rates["f_env"][ip])
-            grow_and_set(groups["M_iso_planetesimal"][str(ip)], planet_model._pla_acc.M_iso_pltsml(planet.R))
-            
+            row["Mdot_planetesimal"] = rates["Mdot_planetesimal_insitu"] * yr
+            row["f_env"] = rates["f_env"]
+            row["M_iso_planetesimal"] = planet_model._pla_acc.M_iso_pltsml(planets.R)
+
         if planet_params["pebble_accretion"]:
-            grow_and_set(groups["Mdot_pebble_core"][str(ip)], rates["Mdot_pebble_core"][ip] * yr)
-            grow_and_set(groups["Mdot_pebble_env"][str(ip)], rates["Mdot_pebble_env"][ip] * yr)
-            grow_and_set(groups["M_iso_pebble"][str(ip)], planet_model._peb_acc.M_iso(planet.R))
+            row["Mdot_pebble_core"] = rates["Mdot_pebble_core"] * yr
+            row["Mdot_pebble_env"] = rates["Mdot_pebble_env"] * yr
+            row["M_iso_pebble"] = planet_model._peb_acc.M_iso(planets.R)
 
         if planet_params["migrate"] and planet_params["planetesimal_accretion_migrate"]:
-            grow_and_set(groups["Mdot_migration"][str(ip)], rates["Mdot_planetesimal_migration"][ip] * yr)
-            
+            row["Mdot_migration"] = rates["Mdot_planetesimal_migration"] * yr
+
         if planet_params["gas_accretion"]:
-            grow_and_set(groups["Mdot_gas"][str(ip)], rates["Mdot_gas"][ip] * yr)
+            row["Mdot_gas"] = rates["Mdot_gas"] * yr
 
-        if chemistry_params["on"]:
-            for js, x in enumerate(planet.X_core):
-                grow_and_set(groups["X_cores"][str(ip)][str(js)], x)
+    # Every per-planet dataset grows by one column each row, even with no
+    # planets yet, so the columns stay aligned with "t". Planets not inserted
+    # yet keep the NaN fill value.
+    for name in _planet_series_names(planet_params):
+        dsets[name].resize(n + 1, axis=1)
+        if N > 0:
+            dsets[name][:N, n] = row[name]
 
-            for js, x in enumerate(planet.X_env):
-                grow_and_set(groups["X_envs"][str(ip)][str(js)], x)
+    if chemistry_params["on"]:
+        dsets["X_cores"].resize(n + 1, axis=2)
+        dsets["X_envs"].resize(n + 1, axis=2)
+        if N > 0:
+            # planets.X_core is (N_species, N_planets); the file is planet-first
+            dsets["X_cores"][:N, :, n] = planets.X_core.T
+            dsets["X_envs"][:N, :, n] = planets.X_env.T
+
+
+def trim_planet_datasets(dsets, planets, config):
+    """Drop the rows of planets that were never inserted, leaving the
+    per-planet datasets with exactly planets.N rows (as in run_model.py)."""
+
+    planet_params = config['planets']
+    if not planet_params['include_planets']:
+        return
+
+    names = _planet_series_names(planet_params)
+    if config['chemistry']["on"]:
+        names = names + ["X_cores", "X_envs"]
+
+    for name in names:
+        if dsets[name].shape[0] != planets.N:
+            dsets[name].resize(planets.N, axis=0)
+
+
+def grow_and_set(dset, value):
+    """Append one row to a growable HDF5 dataset."""
+
+    n = dset.shape[0]
+    dset.resize(n + 1, axis=0)
+    dset[n] = value
 
 
 def write_disc_snapshot(h5f, disc, t, planetesimal_params, chemistry_params):
@@ -520,11 +575,12 @@ def write_disc_snapshot(h5f, disc, t, planetesimal_params, chemistry_params):
 # ============================================================================
 
 def run_model(config, cli_output_dir=None, cli_output_filename=None):
-    """Run one disc-evolution simulation and stream the result to HDF5.
+    """Run one disc-evolution simulation and write the result to HDF5.
 
-    Returns the path to the output .h5 file, or None if no file was written
-    (alpha too high to run). The returned path can be handed to
-    plot_diagnostics() to build the post-hoc diagnostic figure.
+    A row is written to the file every 5 steps (see write_row).
+
+    Returns the path to the output .h5 file. The returned path can be handed
+    to plot_diagnostics() to build the post-hoc diagnostic figure.
     """
 
     grid_params = config['grid']
@@ -611,22 +667,42 @@ def run_model(config, cli_output_dir=None, cli_output_filename=None):
 
     # ---- 8. output file + 9. integrate ----
     vr_0 = disc._gas.viscous_velocity(disc, disc.Sigma)
-    Mdot_0 = disc.Mdot(vr_0[0])
-    Mdisk_0 = disc.Mtot() / Msun
-    Rd_0 = disc.RC()
+    attrs = {
+        "alpha_SS": float(alpha_SS),
+        "psi_DW": float(wind_params["psi_DW"]),
+        "Mdot": float(disc.Mdot(vr_0[0])),
+        "Mdisk": float(disc.Mtot() / Msun),
+        "Rd": float(disc.RC()),
+        "pla_eff": float(planetesimal_params.get("pla_eff", np.nan)),
+        "f_plt": float(planet_params.get("f_plt", 400)),
+    }
 
-    h5f, groups = create_output_file(outfile, grid, config, Nchem, alpha_SS, wind_params["psi_DW"], Mdot_0, Mdisk_0, Rd_0)
-    for ip in range(planets.N if planets is not None else 0):
-        create_planet_datasets(h5f, groups, planet_params, chemistry_params, Nchem, ip)
+    h5f, dsets = create_output_file(outfile, grid, config, Nchem, attrs)
 
+    aborted = False
     try:
-        _integrate(h5f, groups, disc, grid, planets, planet_model, gas, dust, diffuse, chemistry, times, pending_SI, Nchem, config)
+        _integrate(h5f, dsets, disc, grid, planets, planet_model, gas, dust, diffuse, chemistry, times, pending_SI, config)
+        trim_planet_datasets(dsets, planets, config)
+
+        if planet_params['include_planets']:
+            h5f.create_dataset("t_form", data=planets.t_form / yr)   # yr, insertion time per planet
+
         h5f.attrs["complete"] = True
+
+    except SimulationAborted:
+        # Mark the file so that a re-launch of the same sweep skips this run.
+        trim_planet_datasets(dsets, planets, config)
+        h5f.attrs["aborted"] = True
+        aborted = True
 
     finally:
         h5f.close()
 
     print(f"Wrote {outfile}")
+
+    if aborted:
+        sys.exit(1)
+
     return outfile
 
 
@@ -651,7 +727,7 @@ def _growth_rates_now(planet_model, planets, chemistry_on):
     return planet_model._growth_rates(planets.R, planets.M_core, planets.M_env, M_Z, M_HHe)
 
 
-def _integrate(h5f, groups, disc, grid, planets, planet_model, gas, dust, diffuse, chemistry, times, pending_SI, Nchem, config):
+def _integrate(h5f, dsets, disc, grid, planets, planet_model, gas, dust, diffuse, chemistry, times, pending_SI, config):
     """The time-stepping loop plus the periodic writes to `h5f`."""
 
     transport_params = config['transport']
@@ -663,19 +739,15 @@ def _integrate(h5f, groups, disc, grid, planets, planet_model, gas, dust, diffus
     # ---- t = 0 writes (scalars + per-planet always; disc profile only if
     #      0.0 is not itself a requested snapshot, else the loop writes it) ----
     disk_Mdot = _disc_star_mdot(disc)
-    grow_and_set(h5f["t"], 0.0)
-    grow_and_set(h5f["disk_Mdot_star"], disk_Mdot[0])
-    grow_and_set(h5f["disk_Mass"], disc.Mtot())
-    grow_and_set(h5f["Tc"], disc.T[0])
-    grow_and_set(h5f["Sigc"], disc.Sigma[0])
-
+    rates0 = None
     if have_planets and planets.N > 0:
         rates0 = _growth_rates_now(planet_model, planets, chemistry_params["on"])
-        write_planet_row(groups, planets, planet_model, disc, grid, disk_Mdot, rates0, config)
-    
-    if 0.0 not in config['simulation']['t_interval']:
+
+    write_row(dsets, 0.0, disc, grid, disk_Mdot, planets, planet_model, rates0, config)
+
+    if 0.0 not in times:
         write_disc_snapshot(h5f, disc, 0.0, planetesimal_params, chemistry_params)
-    
+
     h5f.flush()
 
     # Used to estimate the wall-clock time remaining
@@ -690,7 +762,7 @@ def _integrate(h5f, groups, disc, grid, planets, planet_model, gas, dust, diffus
             dt = ti - t
             if transport_params['gas_transport']:
                 dt = min(dt, disc._gas.max_timestep(disc))
-            
+
             if transport_params['radial_drift']:
                 dt = min(dt, dust.max_timestep(disc))
 
@@ -714,8 +786,7 @@ def _integrate(h5f, groups, disc, grid, planets, planet_model, gas, dust, diffus
                 for t_impl, R_impl, M_impl in pending_SI:
                     if disc.interp(R_impl, disc.Sigma_D[2]) > 0:
                         planet_model.insert_new_planet(t, R_impl, M_impl, planets)
-                        create_planet_datasets(h5f, groups, planet_params, chemistry_params, Nchem, planets.N - 1)
-                    
+
                     else:
                         still_pending.append((t_impl, R_impl, M_impl))
 
@@ -772,29 +843,20 @@ def _integrate(h5f, groups, disc, grid, planets, planet_model, gas, dust, diffus
 
                 if time_remaining > abort_timescale * 3600:
                     print(f"Aborting simulation - estimated time remaining exceeds abort_timescale ({abort_timescale} hr).", flush=True)
-                    h5f.attrs["aborted"] = True
-                    sys.exit(1)
+                    raise SimulationAborted
 
             # --- stream scalar + per-planet series every 5 steps ---
             if (n % 5) == 0:
                 disk_Mdot = _disc_star_mdot(disc)
-                grow_and_set(h5f["t"], t / yr)          # years
-                grow_and_set(h5f["disk_Mdot_star"], disk_Mdot[0])
-                grow_and_set(h5f["disk_Mass"], disc.Mtot())
-                grow_and_set(h5f["Tc"], disc.T[0])
-                grow_and_set(h5f["Sigc"], disc.Sigma[0])
-                if have_planets and planets.N > 0:
-                    write_planet_row(groups, planets, planet_model, disc, grid, disk_Mdot, planet_model.rates, config)
+                rates = planet_model.rates if have_planets and planets.N > 0 else None
+                write_row(dsets, t / yr, disc, grid, disk_Mdot, planets, planet_model, rates, config)
+
+            if (n % FLUSH_INTERVAL) == 0:
+                h5f.flush()
 
         # --- full disc-profile row once per requested snapshot time ---
         write_disc_snapshot(h5f, disc, t, planetesimal_params, chemistry_params)
         h5f.flush()
-
-    if have_planets:
-        # Matches run_model.py, which writes this unconditionally whenever
-        # planets are enabled in config, regardless of how many were
-        # actually inserted (t_form is simply empty if planets.N == 0).
-        h5f.create_dataset("t_form", data=planets.t_form / yr)   # yr, insertion time per planet
 
 # ============================================================================
 # Diagnostic plot
@@ -822,15 +884,15 @@ def _first_valid(seq):
     return valid[0] if valid.size else np.nan
 
 
-def _planet_CO_track(h5f, ip, nspec):
+def _planet_CO_track(h5f, ip):
     """C/O ratio over time for planet `ip`, from its stored core+envelope abundances."""
 
-    Mc = h5f["Mcs"][str(ip)][:]
-    Me = h5f["Mes"][str(ip)][:]
+    Mc = h5f["Mcs"][ip]
+    Me = h5f["Mes"][ip]
     M = Mc + Me
 
-    X_core = np.array([h5f["X_cores"][str(ip)][str(js)][:] for js in range(nspec)])
-    X_env = np.array([h5f["X_envs"][str(ip)][str(js)][:] for js in range(nspec)])
+    X_core = h5f["X_cores"][ip]     # (N_species, N_rows)
+    X_env = h5f["X_envs"][ip]
 
     with np.errstate(invalid="ignore", divide="ignore"):
         species_data = (X_core * Mc + X_env * Me) / M
@@ -876,9 +938,9 @@ def plot_diagnostics(outfile, fig_dir=None):
             snap_idx = np.searchsorted(t_years, time_snap * 1e6, side="right") - 1
             snap_idx = np.clip(snap_idx, 0, len(t_years) - 1)
 
-            for key in h5f["Rp"]:
-                Rp = h5f["Rp"][key][:]
-                Mp = h5f["Mcs"][key][:] + h5f["Mes"][key][:]
+            for ip in range(h5f["Rp"].shape[0]):
+                Rp = h5f["Rp"][ip]
+                Mp = h5f["Mcs"][ip] + h5f["Mes"][ip]
                 planet_R.append(Rp)
                 planet_M.append(Mp)
                 planet_label_R.append(_first_valid(Rp))
@@ -889,10 +951,9 @@ def plot_diagnostics(outfile, fig_dir=None):
         planet_t, planet_CO = [], []
         if have_planet_chem:
             t_years = h5f["t"][:]
-            nspec = len(CHEM_SPECIES)
-            for key in h5f["Rp"]:
+            for ip in range(h5f["Rp"].shape[0]):
                 planet_t.append(t_years)
-                planet_CO.append(_planet_CO_track(h5f, key, nspec))
+                planet_CO.append(_planet_CO_track(h5f, ip))
 
         alpha_SS = float(h5f.attrs["alpha_SS"])
         Mdot = float(h5f.attrs["Mdot"])
