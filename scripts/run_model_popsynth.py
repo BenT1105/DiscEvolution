@@ -294,6 +294,7 @@ def build_planetesimals(disc, planets, planetesimal_params):
 
 SCALAR_NAMES = ["t", "disk_Mdot_star", "disk_Mass", "Tc", "Sigc"]
 FLUSH_INTERVAL = 5000   # steps between h5f.flush() calls (rows are written every 5 steps regardless)
+ABORT_EXIT_CODE = 3   # exit status for an aborted run (1 = any other failure); run_popsynth.sh keys on this
 
 
 class SimulationAborted(Exception):
@@ -626,7 +627,7 @@ def run_model(config, cli_output_dir=None, cli_output_filename=None):
 
             if existing.attrs.get("aborted", False):
                 print(f"Skipping -- output was previously aborted: {outfile}")
-                sys.exit(1)
+                sys.exit(ABORT_EXIT_CODE)
 
         print(f"Output file exists but is incomplete; re-running: {outfile}")
 
@@ -701,7 +702,7 @@ def run_model(config, cli_output_dir=None, cli_output_filename=None):
     print(f"Wrote {outfile}")
 
     if aborted:
-        sys.exit(1)
+        sys.exit(ABORT_EXIT_CODE)
 
     return outfile
 

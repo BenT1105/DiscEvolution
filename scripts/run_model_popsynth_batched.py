@@ -277,9 +277,9 @@ def build_planetesimals(disc, planets, planetesimal_params):
 
 # Rows are held in array('d') buffers (8 bytes per value) between flushes.
 
-FLUSH_INTERVAL = 5000   # steps between writes of the buffered rows to disk
-
 SCALAR_NAMES = ["t", "disk_Mdot_star", "disk_Mass", "Tc", "Sigc"]
+FLUSH_INTERVAL = 5000   # steps between writes of the buffered rows to disk
+ABORT_EXIT_CODE = 3   # exit status for an aborted run (1 = any other failure)
 
 
 class SimulationAborted(Exception):
@@ -655,7 +655,7 @@ def run_model(config, cli_output_dir=None, cli_output_filename=None):
 
             if existing.attrs.get("aborted", False):
                 print(f"Skipping -- output was previously aborted: {outfile}")
-                sys.exit(1)
+                sys.exit(ABORT_EXIT_CODE)
 
         print(f"Output file exists but is incomplete; re-running: {outfile}")
 
@@ -734,7 +734,7 @@ def run_model(config, cli_output_dir=None, cli_output_filename=None):
     print(f"Wrote {outfile}")
 
     if aborted:
-        sys.exit(1)
+        sys.exit(ABORT_EXIT_CODE)
 
     return outfile
 

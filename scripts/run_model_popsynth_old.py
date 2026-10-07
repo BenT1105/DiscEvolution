@@ -70,6 +70,7 @@ from DiscEvolution.disc_setup import setup_disc
 
 GAS_SOLVER = ViscousEvolutionFV   # viscous scheme used when winds are off
 CHEM_SPECIES = SimpleCOMolAbund(1).names   # fixed species order used by the CO-chem model
+ABORT_EXIT_CODE = 3   # exit status for an aborted run (1 = any other failure)
 plt.rcParams.update({'font.size': 16})
 
 # ============================================================================
@@ -570,7 +571,7 @@ def run_model(config, cli_output_dir=None, cli_output_filename=None):
 
             if existing.attrs.get("aborted", False):
                 print(f"Skipping -- output was previously aborted: {outfile}")
-                sys.exit(1)
+                sys.exit(ABORT_EXIT_CODE)
 
         print(f"Output file exists but is incomplete; re-running: {outfile}")
 
@@ -773,7 +774,7 @@ def _integrate(h5f, groups, disc, grid, planets, planet_model, gas, dust, diffus
                 if time_remaining > abort_timescale * 3600:
                     print(f"Aborting simulation - estimated time remaining exceeds abort_timescale ({abort_timescale} hr).", flush=True)
                     h5f.attrs["aborted"] = True
-                    sys.exit(1)
+                    sys.exit(ABORT_EXIT_CODE)
 
             # --- stream scalar + per-planet series every 5 steps ---
             if (n % 5) == 0:

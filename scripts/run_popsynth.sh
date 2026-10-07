@@ -47,16 +47,17 @@ OUTDIR="${DISCEVOLUTION_OUTPUT:-/home/bentobin/simulations/$RUN_NAME/output}"
 FIGDIR="${DISCEVOLUTION_FIGURE_DIR:-/home/bentobin/simulations/$RUN_NAME/figure}"
 LOGDIR="/home/bentobin/simulations/$RUN_NAME/logs"
 MASTER_LOG="$LOGDIR/${RUN_NAME}_log.csv"
-NPROC=5
+NPROC=2
 
 mkdir -p "$LOGDIR" "$OUTDIR" "$FIGDIR"
 
 # One master CSV log for the whole sweep (separate from the per-run .out/.err
 # files also in $LOGDIR): a row per run mapping its output filename back to
 # the (M, Mdot, Rd, pla_eff, f_plt, alpha) that produced it, plus whether it
-# ran successfully (complete = True/False; False covers runs that crashed or
-# were aborted).
-echo "filename,M,Mdot,Rd,pla_eff,f_plt,alpha,complete" > "$MASTER_LOG"
+# ran successfully (complete = True/False; False covers runs that crashed,
+# were rejected or were aborted) and whether it was aborted for exceeding
+# abort_timescale, on this launch or an earlier one (aborted = True/False).
+echo "filename,M,Mdot,Rd,pla_eff,f_plt,alpha,complete,aborted" > "$MASTER_LOG"
 
 N_TOTAL=$(( $(wc -w <<< "$M_VALUES") * $(wc -w <<< "$MDOT_VALUES") * $(wc -w <<< "$RD_VALUES") \
           * $(wc -w <<< "$PLA_EFF_VALUES") * $(wc -w <<< "$F_PLT_VALUES") * $(wc -w <<< "$ALPHA_VALUES") ))
@@ -102,16 +103,20 @@ run_one() {
     local extra_args=(--output_dir "$OUTDIR" --output_filename "$tag" --figure_dir "$FIGDIR")
     [[ "$PLOT" == true ]] && extra_args+=(--plot)
 
-    # Python exits non-zero if the run crashed, was aborted, or was skipped
-    local complete=True
+    # Python exits 0 if the run finished (now or on an earlier launch), 3 if
+    # it was aborted (now or on an earlier launch), and non-zero otherwise.
+    local complete=True aborted=False status=0
 
     echo "[$(date +%T)] Launching $tag (M=$M Mdot=$Mdot Rd=$Rd pla_eff=$pla_eff f_plt=$f_plt alpha=$alpha; skips itself if already done -- see .out log)"
     python3 "$SCRIPT_DIR/run_model_popsynth.py" --config "$CONFIG_FILE" \
         --M "$M" --Mdot "$Mdot" --Rd "$Rd" --pla_eff "$pla_eff" --f_plt "$f_plt" --alpha "$alpha" \
         "${extra_args[@]}" \
-        > "$LOGDIR/${tag}.out" 2> "$LOGDIR/${tag}.err" || complete=False
+        > "$LOGDIR/${tag}.out" 2> "$LOGDIR/${tag}.err" || status=$?
 
-    printf '%s,%s,%s,%s,%s,%s,%s,%s\n' "${tag}.h5" "$M" "$Mdot" "$Rd" "$pla_eff" "$f_plt" "$alpha" "$complete" >> "$MASTER_LOG"
+    if [[ "$status" -ne 0 ]]; then complete=False; fi
+    if [[ "$status" -eq 3 ]]; then aborted=True; fi
+
+    printf '%s,%s,%s,%s,%s,%s,%s,%s,%s\n' "${tag}.h5" "$M" "$Mdot" "$Rd" "$pla_eff" "$f_plt" "$alpha" "$complete" "$aborted" >> "$MASTER_LOG"
 }
 
 export -f index_of run_one
