@@ -16,7 +16,11 @@
 #
 # To run this fully in the background, detached from your terminal (so it
 # keeps going after you close your laptop or log out of an ssh session):
-#   nohup setsid ./run_popsynth.sh > master.log 2>&1 &
+#   nohup setsid bash run_popsynth.sh > /dev/null 2>&1 &
+#
+# Everything this script prints goes to $LOGDIR/${RUN_NAME}_master.log (the
+# script redirects its own output there), so there is no log file to name on
+# the command line.
 
 set -euo pipefail
 
@@ -51,6 +55,12 @@ NPROC=6
 
 mkdir -p "$LOGDIR" "$OUTDIR" "$FIGDIR"
 
+# From here on, send everything this script prints (and any shell errors) to
+# the run's own master log, overwriting the one from any previous launch.
+RUN_LOG="$LOGDIR/master.log"
+echo "Logging to: $RUN_LOG"
+exec > "$RUN_LOG" 2>&1
+
 # One master CSV log for the whole sweep (separate from the per-run .out/.err
 # files also in $LOGDIR): a row per run mapping its output filename back to
 # the (M, Mdot, Rd, pla_eff, f_plt, alpha) that produced it, plus whether it
@@ -68,7 +78,8 @@ echo "Output to:  $OUTDIR"
 echo "Plot:       $PLOT"
 echo "Figures to: $FIGDIR"
 echo "Logs to:    $LOGDIR"
-echo "Master log: $MASTER_LOG"
+echo "Master log: $RUN_LOG"
+echo "CSV log:    $MASTER_LOG"
 echo "Grid size:  $N_TOTAL combinations"
 echo
 

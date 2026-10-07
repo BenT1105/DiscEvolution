@@ -2,9 +2,11 @@
 #
 # run_popsynth_dryrun.sh
 # ----------------------
-# Print the run_model_popsynth.py commands that run_popsynth.sh would launch,
-# one per line, without running anything or writing any files (no output,
-# figure or log directories are created, and the master CSV log is untouched).
+# Write out the run_model_popsynth.py commands that run_popsynth.sh would
+# launch, one per line, without running any of them. The only file written is
+# the listing itself, ~/simulations/dryruns/${RUN_NAME}.txt (overwritten each
+# time); no output, figure or log directories are created, and the master
+# CSV log is untouched.
 #
 # The parameter grid and run settings are read straight out of
 # run_popsynth.sh, so this always reflects whatever that script currently
@@ -27,32 +29,34 @@ fi
 # 1. Pull the grid + run settings (sections 1 and 2) from run_popsynth.sh.
 # ---------------------------------------------------------------------------
 
-eval "$(grep -E '^(M_VALUES|MDOT_VALUES|RD_VALUES|PLA_EFF_VALUES|F_PLT_VALUES|ALPHA_VALUES|RUN_NAME|PLOT|CONFIG_NAME|NPROC)=' "$SWEEP_SCRIPT")"
-
-RUN_NAME="dryrun"
-CONFIG_NAME="popsynth_default_config.json"
-CONFIG_FILE="$SCRIPT_DIR/../configs/$CONFIG_NAME"
-OUTDIR="${DISCEVOLUTION_OUTPUT:-/home/bentobin/simulations/$RUN_NAME/output}"
-FIGDIR="${DISCEVOLUTION_FIGURE_DIR:-/home/bentobin/simulations/$RUN_NAME/figure}"
-LOGDIR="/home/bentobin/simulations/$RUN_NAME/logs"
-MASTER_LOG="$LOGDIR/${RUN_NAME}_log.csv"
+# These are plain variable assignments, evaluated here in the order they
+# appear in run_popsynth.sh (the paths build on RUN_NAME, CONFIG_NAME and
+# SCRIPT_DIR, which is the same directory for both scripts).
+eval "$(grep -E '^(M_VALUES|MDOT_VALUES|RD_VALUES|PLA_EFF_VALUES|F_PLT_VALUES|ALPHA_VALUES|RUN_NAME|PLOT|CONFIG_NAME|CONFIG_FILE|OUTDIR|FIGDIR|LOGDIR|MASTER_LOG|NPROC|RUN_LOG)=' "$SWEEP_SCRIPT")"
 
 N_TOTAL=$(( $(wc -w <<< "$M_VALUES") * $(wc -w <<< "$MDOT_VALUES") * $(wc -w <<< "$RD_VALUES") \
           * $(wc -w <<< "$PLA_EFF_VALUES") * $(wc -w <<< "$F_PLT_VALUES") * $(wc -w <<< "$ALPHA_VALUES") ))
 
-# Summary goes to stderr so that stdout is only the commands themselves.
+# Everything from here on (the summary, then the commands) goes to the
+# dry-run listing instead of the terminal.
+DRYRUN_FILE="$HOME/simulations/dryruns/${RUN_NAME}.txt"
+mkdir -p "$(dirname "$DRYRUN_FILE")"
+echo "Writing dry run to: $DRYRUN_FILE"
+exec > "$DRYRUN_FILE"
+
 {
-    echo "DRY RUN -- nothing is run and no files are written"
+    echo "DRY RUN -- nothing is run"
     echo "Config:     $CONFIG_FILE"
     echo "Run name:   $RUN_NAME"
     echo "Output to:  $OUTDIR"
     echo "Plot:       $PLOT"
     echo "Figures to: $FIGDIR"
     echo "Logs to:    $LOGDIR"
-    echo "Master log: $MASTER_LOG"
+    echo "Master log: $RUN_LOG"
+    echo "CSV log:    $MASTER_LOG"
     echo "Grid size:  $N_TOTAL combinations ($NPROC at a time)"
     echo
-} >&2
+}
 
 # ---------------------------------------------------------------------------
 # 2. One command per (M, Mdot, Rd, pla_eff, f_plt, alpha) combination, in the
