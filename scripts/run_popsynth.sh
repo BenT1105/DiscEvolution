@@ -47,7 +47,7 @@ OUTDIR="${DISCEVOLUTION_OUTPUT:-/home/bentobin/simulations/$RUN_NAME/output}"
 FIGDIR="${DISCEVOLUTION_FIGURE_DIR:-/home/bentobin/simulations/$RUN_NAME/figure}"
 LOGDIR="/home/bentobin/simulations/$RUN_NAME/logs"
 MASTER_LOG="$LOGDIR/${RUN_NAME}_log.csv"
-NPROC=2
+NPROC=6
 
 mkdir -p "$LOGDIR" "$OUTDIR" "$FIGDIR"
 
@@ -107,7 +107,7 @@ run_one() {
     # it was aborted (now or on an earlier launch), and non-zero otherwise.
     local complete=True aborted=False status=0
 
-    echo "[$(date +%T)] Launching $tag (M=$M Mdot=$Mdot Rd=$Rd pla_eff=$pla_eff f_plt=$f_plt alpha=$alpha; skips itself if already done -- see .out log)"
+    echo "[$(date '+%F %T')] Launching $tag (M=$M Mdot=$Mdot Rd=$Rd pla_eff=$pla_eff f_plt=$f_plt alpha=$alpha)"
     python3 "$SCRIPT_DIR/run_model_popsynth.py" --config "$CONFIG_FILE" \
         --M "$M" --Mdot "$Mdot" --Rd "$Rd" --pla_eff "$pla_eff" --f_plt "$f_plt" --alpha "$alpha" \
         "${extra_args[@]}" \
@@ -117,6 +117,8 @@ run_one() {
     if [[ "$status" -eq 3 ]]; then aborted=True; fi
 
     printf '%s,%s,%s,%s,%s,%s,%s,%s,%s\n' "${tag}.h5" "$M" "$Mdot" "$Rd" "$pla_eff" "$f_plt" "$alpha" "$complete" "$aborted" >> "$MASTER_LOG"
+
+    echo "[$(date '+%F %T')] Finished  $tag (complete=$complete aborted=$aborted)"
 }
 
 export -f index_of run_one
@@ -124,7 +126,9 @@ export SCRIPT_DIR CONFIG_FILE OUTDIR FIGDIR LOGDIR MASTER_LOG RUN_NAME PLOT
 export M_VALUES MDOT_VALUES RD_VALUES PLA_EFF_VALUES F_PLT_VALUES ALPHA_VALUES
 
 if command -v parallel >/dev/null 2>&1; then
-    parallel -j "$NPROC" run_one {1} {2} {3} {4} {5} {6} \
+    # --line-buffer: pass each "Launching"/"Finished" line through as soon as
+    # it is printed, instead of holding a job's output until that job ends.
+    parallel --line-buffer -j "$NPROC" run_one {1} {2} {3} {4} {5} {6} \
         ::: $M_VALUES ::: $MDOT_VALUES ::: $RD_VALUES ::: $PLA_EFF_VALUES ::: $F_PLT_VALUES ::: $ALPHA_VALUES
 
 else
@@ -152,4 +156,4 @@ else
 fi
 
 echo
-echo "[$(date +%T)] All simulations complete."
+echo "[$(date '+%F %T')] All simulations complete."
