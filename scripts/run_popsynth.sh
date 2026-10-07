@@ -47,7 +47,7 @@ OUTDIR="${DISCEVOLUTION_OUTPUT:-/home/bentobin/simulations/$RUN_NAME/output}"
 FIGDIR="${DISCEVOLUTION_FIGURE_DIR:-/home/bentobin/simulations/$RUN_NAME/figure}"
 LOGDIR="/home/bentobin/simulations/$RUN_NAME/logs"
 MASTER_LOG="$LOGDIR/${RUN_NAME}_log.csv"
-NPROC=6
+NPROC=5
 
 mkdir -p "$LOGDIR" "$OUTDIR" "$FIGDIR"
 
