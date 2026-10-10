@@ -16,7 +16,7 @@
 
     "simulation": {
         "t_initial": 0,
-        "t_final": 3000000.0,
+        "t_final": 1000000.0,
         "t_interval": [0, 0.001, 0.01, 0.1, 0.2, 0.5, 1.0, 2.0, 3.0],
         "abort_timescale": 12,
         "output_dir": "/home/bentobin/simulations/",
