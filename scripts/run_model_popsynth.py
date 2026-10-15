@@ -575,10 +575,13 @@ def write_disc_snapshot(h5f, disc, t, planetesimal_params, chemistry_params):
 # Main driver
 # ============================================================================
 
-def run_model(config, cli_output_dir=None, cli_output_filename=None):
+def run_model(config, cli_output_dir=None, cli_output_filename=None, rerun_aborted=False):
     """Run one disc-evolution simulation and write the result to HDF5.
 
     A row is written to the file every 5 steps (see write_row).
+
+    If rerun_aborted is True, an existing output file marked as aborted is
+    overwritten and the run starts again from t = 0 instead of being skipped.
 
     Returns the path to the output .h5 file. The returned path can be handed
     to plot_diagnostics() to build the post-hoc diagnostic figure.
@@ -625,11 +628,17 @@ def run_model(config, cli_output_dir=None, cli_output_filename=None):
                 print(f"Skipping -- output already complete: {outfile}")
                 return outfile
 
-            if existing.attrs.get("aborted", False):
-                print(f"Skipping -- output was previously aborted: {outfile}")
-                sys.exit(ABORT_EXIT_CODE)
+            previously_aborted = existing.attrs.get("aborted", False)
 
-        print(f"Output file exists but is incomplete; re-running: {outfile}")
+        if previously_aborted and not rerun_aborted:
+            print(f"Skipping -- output was previously aborted: {outfile}")
+            sys.exit(ABORT_EXIT_CODE)
+
+        if previously_aborted:
+            print(f"Output was previously aborted; re-running (--rerun_aborted): {outfile}")
+        
+        else:
+            print(f"Output file exists but is incomplete; re-running: {outfile}")
 
     # ---- 2. grid + star + time grid ----
     grid = Grid(grid_params['rmin'], grid_params['rmax'], grid_params['nr'], spacing=grid_params['spacing'])
@@ -1097,6 +1106,8 @@ if __name__ == "__main__":
     parser.add_argument("--output_filename", type=str, default=None, help="Override output file name")
     parser.add_argument("--plot", action="store_true", help="Produce a diagnostic plot PNG after the run completes")
     parser.add_argument("--figure_dir", type=str, default=None, help="Directory to save the diagnostic plot PNG")
+    parser.add_argument("--rerun_aborted", action="store_true", help="Re-run an output file previously marked as aborted")
+    parser.add_argument("--abort_timescale", type=float, default=None, help="Override abort_timescale [hours]")
 
     ## Disk parameter overrides
     parser.add_argument("--M", type=float, default=None, help="Override disc mass [Msun]")
@@ -1126,6 +1137,7 @@ if __name__ == "__main__":
         ("planetesimal", "pla_eff"): args.pla_eff,
         ("planets", "f_plt"): args.f_plt,
         ("disc", "alpha"): args.alpha,
+        ("simulation", "abort_timescale"): args.abort_timescale,
     }
 
     for (section, key), value in overrides.items():
@@ -1134,7 +1146,7 @@ if __name__ == "__main__":
             print(f"Overriding {section}.{key}: {value}")
 
     start_time = time.time()
-    outfile = run_model(config, cli_output_dir=args.output_dir, cli_output_filename=args.output_filename)
+    outfile = run_model(config, cli_output_dir=args.output_dir, cli_output_filename=args.output_filename, rerun_aborted=args.rerun_aborted)
 
     if args.plot:
         # Figure directory precedence: --figure_dir CLI flag > config.json

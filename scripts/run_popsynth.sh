@@ -11,6 +11,11 @@
 # can just launch everything every time; the Python side figures
 # out what's actually left to do.
 #
+# Runs that were aborted (estimated time remaining > abort_timescale) are
+# skipped on re-launch too, unless RERUN_ABORTED=true, then they are
+# overwritten and run again from scratch, optionally with a longer
+# ABORT_TIMESCALE.
+#
 # Usage:
 #   ./run_popsynth_popsynth.sh
 #
@@ -43,6 +48,12 @@ ALPHA_VALUES="1e-5"
 RUN_NAME="testmodel"
 PLOT=true
 
+# Set RERUN_ABORTED=true to re-run any combination previously marked as
+# aborted. ABORT_TIMESCALE [hours] overrides simulation.abort_timescale from
+# the config; leave it empty to use the config value.
+RERUN_ABORTED=true
+ABORT_TIMESCALE=""
+
 CONFIG_NAME="popsynth_default_config.json"
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
@@ -51,7 +62,7 @@ OUTDIR="${DISCEVOLUTION_OUTPUT:-/home/bentobin/simulations/$RUN_NAME/output}"
 FIGDIR="${DISCEVOLUTION_FIGURE_DIR:-/home/bentobin/simulations/$RUN_NAME/figure}"
 LOGDIR="/home/bentobin/simulations/$RUN_NAME/logs"
 MASTER_LOG="$LOGDIR/${RUN_NAME}_log.csv"
-NPROC=6
+NPROC=8
 
 mkdir -p "$LOGDIR" "$OUTDIR" "$FIGDIR"
 
@@ -72,15 +83,17 @@ echo "filename,M,Mdot,Rd,pla_eff,f_plt,alpha,complete,aborted" > "$MASTER_LOG"
 N_TOTAL=$(( $(wc -w <<< "$M_VALUES") * $(wc -w <<< "$MDOT_VALUES") * $(wc -w <<< "$RD_VALUES") \
           * $(wc -w <<< "$PLA_EFF_VALUES") * $(wc -w <<< "$F_PLT_VALUES") * $(wc -w <<< "$ALPHA_VALUES") ))
 
-echo "Config:     $CONFIG_FILE"
-echo "Run name:   $RUN_NAME"
-echo "Output to:  $OUTDIR"
-echo "Plot:       $PLOT"
-echo "Figures to: $FIGDIR"
-echo "Logs to:    $LOGDIR"
-echo "Master log: $RUN_LOG"
-echo "CSV log:    $MASTER_LOG"
-echo "Grid size:  $N_TOTAL combinations"
+echo "Config:          $CONFIG_FILE"
+echo "Run name:        $RUN_NAME"
+echo "Output to:       $OUTDIR"
+echo "Plot:            $PLOT"
+echo "Rerun aborted:   $RERUN_ABORTED"
+echo "Abort timescale: ${ABORT_TIMESCALE:-(from config)}"
+echo "Figures to:      $FIGDIR"
+echo "Logs to:         $LOGDIR"
+echo "Master log:      $RUN_LOG"
+echo "CSV log:         $MASTER_LOG"
+echo "Grid size:       $N_TOTAL combinations"
 echo
 
 # ---------------------------------------------------------------------------
@@ -113,6 +126,8 @@ run_one() {
 
     local extra_args=(--output_dir "$OUTDIR" --output_filename "$tag" --figure_dir "$FIGDIR")
     [[ "$PLOT" == true ]] && extra_args+=(--plot)
+    [[ "$RERUN_ABORTED" == true ]] && extra_args+=(--rerun_aborted)
+    [[ -n "$ABORT_TIMESCALE" ]] && extra_args+=(--abort_timescale "$ABORT_TIMESCALE")
 
     # Python exits 0 if the run finished (now or on an earlier launch), 3 if
     # it was aborted (now or on an earlier launch), and non-zero otherwise.
@@ -133,7 +148,7 @@ run_one() {
 }
 
 export -f index_of run_one
-export SCRIPT_DIR CONFIG_FILE OUTDIR FIGDIR LOGDIR MASTER_LOG RUN_NAME PLOT
+export SCRIPT_DIR CONFIG_FILE OUTDIR FIGDIR LOGDIR MASTER_LOG RUN_NAME PLOT RERUN_ABORTED ABORT_TIMESCALE
 export M_VALUES MDOT_VALUES RD_VALUES PLA_EFF_VALUES F_PLT_VALUES ALPHA_VALUES
 
 if command -v parallel >/dev/null 2>&1; then
