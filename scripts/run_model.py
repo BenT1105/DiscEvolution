@@ -697,20 +697,21 @@ def run_model(config):
                 X_cores.append([[np.nan] * n_backfill for num in range(0, Nchem, 1)])
                 X_envs.append([[np.nan] * n_backfill for num in range(0, Nchem, 1)])
 
-        ## Planets with Mp = "SI" are are only inserted once the planetesimal surface density becomes nonzero
-        pending_SI_planets = []
+        ## Planets are only inserted once t >= implant_time (in years). Planets with Mp = "SI" are
+        ## also only inserted once the planetesimal surface density at their radius becomes nonzero
+        pending_planets = []
 
         for i in range(len(Rp)):
             t_impl = planet_params["implant_time"][i]
             R_impl = Rp[i]
             M_impl = Mp[i]
 
-            if str(M_impl).upper() == "SI":
-                pending_SI_planets.append((R_impl, M_impl))
+            if str(M_impl).upper() != "SI" and t_impl <= 0:
+                planet_model.insert_new_planet(0.0, R_impl, M_impl, planets)
+                add_planet_tracking_slot()
 
             else:
-                planet_model.insert_new_planet(t_impl, R_impl, M_impl, planets)
-                add_planet_tracking_slot()
+                pending_planets.append((t_impl * yr, R_impl, M_impl))
 
     else:
         planets = None
@@ -925,19 +926,20 @@ def run_model(config):
                 if disc._planetesimal:
                     disc._planetesimal.update(dt, disc, dust)
 
-                ## Insert any pending "SI" planets once the planetesimal surface density is nonzero
-                if planet_params['include_planets'] and pending_SI_planets and disc._planetesimal:
+                ## Insert any pending planets once t >= their implant time ("SI" planets also need a nonzero planetesimal surface density)
+                if planet_params['include_planets'] and pending_planets:
                     still_pending = []
 
-                    for R_impl, M_impl in pending_SI_planets:
-                        if disc.interp(R_impl, disc.Sigma_D[2]) > 0:
+                    for t_impl, R_impl, M_impl in pending_planets:
+                        is_SI = str(M_impl).upper() == "SI"
+                        if t >= t_impl and (not is_SI or (disc._planetesimal and disc.interp(R_impl, disc.Sigma_D[2]) > 0)):
                             planet_model.insert_new_planet(t, R_impl, M_impl, planets)
                             add_planet_tracking_slot()
 
                         else:
-                            still_pending.append((R_impl, M_impl))
+                            still_pending.append((t_impl, R_impl, M_impl))
 
-                    pending_SI_planets = still_pending
+                    pending_planets = still_pending
 
                 ## Do dust evolution
                 if transport_params['radial_drift']:
