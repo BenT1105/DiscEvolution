@@ -208,10 +208,12 @@ def build_planets(disc, planet_params, chemistry_params, wind_params):
     """
     Create the Planets container + Bitsch2015Model and insert the planets.
 
-    Returns (planets, planet_model, pending_SI). Planets whose mass is the
-    string "SI" cannot be placed yet -- they need a nonzero planetesimal
-    surface density -- so they are returned in `pending_SI` and inserted
-    later, inside the time loop, once Sigma_planetesimal > 0 at their radius.
+    Returns (planets, planet_model, pending_planets). Only planets with a
+    numeric/"PA"/"TR" mass and implant_time = 0 are placed now. Every other
+    planet is returned in `pending_planets` as (implant time in code units,
+    R, M) and inserted later, inside the time loop, once t >= its implant
+    time (implant_time is in years). Planets whose mass is the string "SI"
+    additionally wait until Sigma_planetesimal > 0 at their radius.
     """
 
     if not planet_params['include_planets']:
@@ -233,17 +235,32 @@ def build_planets(disc, planet_params, chemistry_params, wind_params):
     
     planet_model.set_disc(disc)
 
-    pending_SI = []
+    pending_planets = []
     for R_impl, M_impl, t_impl in zip(planet_params['Rp'], planet_params['Mp'], planet_params['implant_time']):
-        if str(M_impl).upper() == "SI":
-            pending_SI.append((t_impl, R_impl, M_impl))
-
-        else:
+        if str(M_impl).upper() != "SI" and t_impl <= 0:
             # M may be a number (Mearth) or "PA"/"TR" (birth-mass models);
             # insert_new_planet handles the string cases and sets M_env = 0.
-            planet_model.insert_new_planet(t_impl, R_impl, M_impl, planets)
+            planet_model.insert_new_planet(0.0, R_impl, M_impl, planets)
 
-    return planets, planet_model, pending_SI
+        else:
+            # implant_time is in years; store it in code time to compare with t
+            pending_planets.append((t_impl * yr, R_impl, M_impl))
+
+    return planets, planet_model, pending_planets
+
+
+def _ready_to_insert(t, t_impl, R_impl, M_impl, disc):
+    """Whether a pending planet can be inserted at code time `t`. Every planet
+    waits until its implant time; "SI" planets also need a nonzero
+    planetesimal surface density at their radius."""
+
+    if t < t_impl:
+        return False
+
+    if str(M_impl).upper() == "SI":
+        return bool(disc._planetesimal) and disc.interp(R_impl, disc.Sigma_D[2]) > 0
+
+    return True
 
 # ============================================================================
 # Step 7: planetesimals
@@ -650,6 +667,7 @@ def run_model(config, cli_output_dir=None, cli_output_filename=None, rerun_abort
 
     # ---- 3. initial disc structure ----
     disc, eos, Sigma, psi, alpha_SS, lambda_DW = setup_disc(grid, star, config, kappa)
+    wind_params["psi_DW"] = psi     # use the solved psi for the transport model and the saved attributes
 
     if alpha_SS > 5e-3:
         print(f"Not running model - alpha too high. alpha_SS={alpha_SS:.3e}, "
@@ -672,7 +690,7 @@ def run_model(config, cli_output_dir=None, cli_output_filename=None, rerun_abort
     chemistry, Nchem = build_chemistry(disc, chemistry_params, disc_params["d2g"], grid_params["nr"])
 
     # ---- 6. planets, then 7. planetesimals (planets first: VS_embryo needs them) ----
-    planets, planet_model, pending_SI = build_planets(disc, planet_params, chemistry_params, wind_params)
+    planets, planet_model, pending_planets = build_planets(disc, planet_params, chemistry_params, wind_params)
     build_planetesimals(disc, planets, planetesimal_params)
 
     # ---- 8. output file + 9. integrate ----
@@ -691,7 +709,7 @@ def run_model(config, cli_output_dir=None, cli_output_filename=None, rerun_abort
 
     aborted = False
     try:
-        _integrate(h5f, dsets, disc, grid, planets, planet_model, gas, dust, diffuse, chemistry, times, pending_SI, config)
+        _integrate(h5f, dsets, disc, grid, planets, planet_model, gas, dust, diffuse, chemistry, times, pending_planets, config)
         trim_planet_datasets(dsets, planets, config)
 
         if planet_params['include_planets']:
@@ -737,7 +755,7 @@ def _growth_rates_now(planet_model, planets, chemistry_on):
     return planet_model._growth_rates(planets.R, planets.M_core, planets.M_env, M_Z, M_HHe)
 
 
-def _integrate(h5f, dsets, disc, grid, planets, planet_model, gas, dust, diffuse, chemistry, times, pending_SI, config):
+def _integrate(h5f, dsets, disc, grid, planets, planet_model, gas, dust, diffuse, chemistry, times, pending_planets, config):
     """The time-stepping loop plus the periodic writes to `h5f`."""
 
     transport_params = config['transport']
@@ -790,17 +808,17 @@ def _integrate(h5f, dsets, disc, grid, planets, planet_model, gas, dust, diffuse
             if disc._planetesimal:
                 disc._planetesimal.update(dt, disc, dust)
 
-            # --- insert any pending "SI" planets now that planetesimals exist ---
-            if have_planets and pending_SI and disc._planetesimal:
+            # --- insert pending planets once t >= their implant time ("SI" planets also need planetesimals) ---
+            if have_planets and pending_planets:
                 still_pending = []
-                for t_impl, R_impl, M_impl in pending_SI:
-                    if disc.interp(R_impl, disc.Sigma_D[2]) > 0:
+                for t_impl, R_impl, M_impl in pending_planets:
+                    if _ready_to_insert(t, t_impl, R_impl, M_impl, disc):
                         planet_model.insert_new_planet(t, R_impl, M_impl, planets)
 
                     else:
                         still_pending.append((t_impl, R_impl, M_impl))
 
-                pending_SI = still_pending
+                pending_planets = still_pending
 
             # --- dust radial drift ---
             if transport_params['radial_drift']:
