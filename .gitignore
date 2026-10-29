@@ -3,5 +3,5 @@ __pycache__/
 .DS_Store
 .ipynb_checkpoints/
 
-# Local-only notebooks (not committed)
+# Local-only notebooks (do not commit)
 notebooks/local/
