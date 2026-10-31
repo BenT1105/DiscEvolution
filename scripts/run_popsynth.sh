@@ -1,6 +1,6 @@
 #!/bin/bash
 #
-# run_popsynth_student.sh
+# run_popsynth.sh
 # ------------------------
 # Launch a grid of DiscEvolution runs (run_model_popsynth.py) over
 # (M, Mdot, Rd, pla_eff, f_plt, alpha), running up to $NPROC of them at a time.
@@ -17,7 +17,7 @@
 # ABORT_TIMESCALE.
 #
 # Usage:
-#   ./run_popsynth_popsynth.sh
+#   ./run_popsynth.sh
 #
 # To run this fully in the background, detached from your terminal (so it
 # keeps going after you close your laptop or log out of an ssh session):
@@ -52,7 +52,7 @@ PLOT=true
 # aborted. ABORT_TIMESCALE [hours] overrides simulation.abort_timescale from
 # the config; leave it empty to use the config value.
 RERUN_ABORTED=true
-ABORT_TIMESCALE=""
+ABORT_TIMESCALE="36"
 
 CONFIG_NAME="popsynth_default_config.json"
 
