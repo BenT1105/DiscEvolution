@@ -78,7 +78,11 @@ exec > "$RUN_LOG" 2>&1
 # ran successfully (complete = True/False; False covers runs that crashed,
 # were rejected or were aborted) and whether it was aborted for exceeding
 # abort_timescale, on this launch or an earlier one (aborted = True/False).
-echo "filename,M,Mdot,Rd,pla_eff,f_plt,alpha,complete,aborted" > "$MASTER_LOG"
+# run_time_hr is the run's time in hours, including aborted runs; a skipped run
+# keeps the time from its original run. It is nan if the output file predates
+# run_time_hr, and blank if the model never started (rejected, or crashed during
+# setup) or the process was killed.
+echo "filename,M,Mdot,Rd,pla_eff,f_plt,alpha,complete,aborted,run_time_hr" > "$MASTER_LOG"
 
 N_TOTAL=$(( $(wc -w <<< "$M_VALUES") * $(wc -w <<< "$MDOT_VALUES") * $(wc -w <<< "$RD_VALUES") \
           * $(wc -w <<< "$PLA_EFF_VALUES") * $(wc -w <<< "$F_PLT_VALUES") * $(wc -w <<< "$ALPHA_VALUES") ))
@@ -142,7 +146,10 @@ run_one() {
     if [[ "$status" -ne 0 ]]; then complete=False; fi
     if [[ "$status" -eq 3 ]]; then aborted=True; fi
 
-    printf '%s,%s,%s,%s,%s,%s,%s,%s,%s\n' "${tag}.h5" "$M" "$Mdot" "$Rd" "$pla_eff" "$f_plt" "$alpha" "$complete" "$aborted" >> "$MASTER_LOG"
+    local run_time_hr
+    run_time_hr=$(sed -n 's/^run_time_hr: //p' "$LOGDIR/${tag}.out")
+
+    printf '%s,%s,%s,%s,%s,%s,%s,%s,%s,%s\n' "${tag}.h5" "$M" "$Mdot" "$Rd" "$pla_eff" "$f_plt" "$alpha" "$complete" "$aborted" "$run_time_hr" >> "$MASTER_LOG"
 
     echo "[$(date '+%F %T')] Finished  $tag (complete=$complete aborted=$aborted)"
 }

@@ -600,9 +600,15 @@ def run_model(config, cli_output_dir=None, cli_output_filename=None, rerun_abort
     If rerun_aborted is True, an existing output file marked as aborted is
     overwritten and the run starts again from t = 0 instead of being skipped.
 
+    The run time is saved as the "run_time_hr" attribute of the output file
+    and printed as "run_time_hr: <hours>", which run_popsynth.sh reads into
+    its CSV log. A skipped run prints the time saved by its original run.
+
     Returns the path to the output .h5 file. The returned path can be handed
     to plot_diagnostics() to build the post-hoc diagnostic figure.
     """
+
+    start_time = time.time()
 
     grid_params = config['grid']
     sim_params = config['simulation']
@@ -641,14 +647,18 @@ def run_model(config, cli_output_dir=None, cli_output_filename=None, rerun_abort
 
     if os.path.exists(outfile):
         with h5py.File(outfile, "r") as existing:
+            previous_run_time = existing.attrs.get("run_time_hr", np.nan)   # nan if the file predates this attribute
+
             if existing.attrs.get("complete", False):
                 print(f"Skipping -- output already complete: {outfile}")
+                print(f"run_time_hr: {previous_run_time:.4f}")
                 return outfile
 
             previously_aborted = existing.attrs.get("aborted", False)
 
         if previously_aborted and not rerun_aborted:
             print(f"Skipping -- output was previously aborted: {outfile}")
+            print(f"run_time_hr: {previous_run_time:.4f}")
             sys.exit(ABORT_EXIT_CODE)
 
         if previously_aborted:
@@ -724,7 +734,10 @@ def run_model(config, cli_output_dir=None, cli_output_filename=None, rerun_abort
         aborted = True
 
     finally:
+        run_time_hr = (time.time() - start_time) / 3600
+        h5f.attrs["run_time_hr"] = run_time_hr
         h5f.close()
+        print(f"run_time_hr: {run_time_hr:.4f}")
 
     print(f"Wrote {outfile}")
 
