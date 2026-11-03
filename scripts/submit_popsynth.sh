@@ -6,7 +6,7 @@
 # contains both scripts:
 #   sbatch submit_popsynth.sh
 #
-#SBATCH --account=def-<sponsor>
+#SBATCH --account=def-mbalogh
 #SBATCH --job-name=popsynth
 #SBATCH --time=5-00:00              # whole grid, not one run (max 7-00:00)
 #SBATCH --cpus-per-task=160         # runs at once (sets NPROC)
