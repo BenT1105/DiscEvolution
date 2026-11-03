@@ -21,4 +21,4 @@ export OMP_NUM_THREADS=1            # one thread per run
 export MPLBACKEND=Agg               # plotting without a display
 export SIMDIR=~/scratch/simulations # output location on Nibi
 
-bash "$SLURM_SUBMIT_DIR/run_popsynth.sh"
+bash "$SLURM_SUBMIT_DIR/run_popsynth_nibi.sh"
