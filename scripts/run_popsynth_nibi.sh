@@ -49,7 +49,7 @@ ALPHA_VALUES="1e-5 1e-4 1e-3"
 #    at once. Output, figure and log files are written under $SIMDIR/$RUN_NAME/.
 # ---------------------------------------------------------------------------
 
-RUN_NAME="popsynth_1"
+RUN_NAME="popsynth_2"
 PLOT=true
 
 # Set RERUN_ABORTED=true to re-run any combination previously marked as
