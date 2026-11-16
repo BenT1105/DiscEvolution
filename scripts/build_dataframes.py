@@ -10,7 +10,11 @@ Three dataframes are built, each saved to its own pickle file:
 
     df_planets_{MODEL}.pkl   one row per planet: final state, implantation and disc parameters
     df_discs_{MODEL}.pkl     one row per disc: the disc parameters from the HDF5 attributes
-    df_tracks_{MODEL}.pkl    one row per planet: thinned growth track (position and total mass)
+    df_tracks_{MODEL}.pkl    one row per planet: thinned growth track (position and total mass) and disc parameters
+
+The disc parameters measured from the disc (Mdisk, Mdot, Rd) are rounded back
+to the grid values the population synthesis was run with, and Mdot is saved
+in Msun/Myr (the HDF5 attribute is in Msun/yr).
 
 Only simulations that have completed are included. A dataframe whose pickle
 file already exists is skipped unless its --rebuild flag is given.
@@ -196,6 +200,40 @@ def load_data(data_dir):
 
     return data
 
+## --------------------------------------
+## Method to round the disc parameters
+## --------------------------------------
+
+GRID_KEYS = ["Mdisk", "Mdot", "Rd", "alpha_SS", "psi_DW", "pla_eff", "f_plt"]
+
+def round_grid_params(params):
+    """
+    Round the disc parameters that are measured from the disc back to the grid
+    values the population synthesis was run with, and convert Mdot to Msun/Myr.
+    Mdisk is rounded to 3 decimal places, Mdot to 2 significant figures (in
+    Msun/Myr) and Rd to the nearest AU. alpha_SS, pla_eff and f_plt are saved
+    exactly as input and psi_DW is solved per disc, so they are left unchanged.
+
+    Parameters:
+        params: Dictionary of disc parameters read from the HDF5 attributes (Mdot in Msun/yr).
+
+    Returns:
+        params: New dictionary with Mdisk, Mdot [Msun/Myr] and Rd rounded to the grid values.
+    """
+
+    params = dict(params)
+
+    if "Mdisk" in params:
+        params["Mdisk"] = round(params["Mdisk"], 3)
+
+    if "Mdot" in params:
+        params["Mdot"] = float(f"{params['Mdot'] * 1e6:.2g}")
+
+    if "Rd" in params:
+        params["Rd"] = round(params["Rd"], 0)
+
+    return params
+
 ## -------------------------------
 ## Methods to build the dataframes
 ## -------------------------------
@@ -248,13 +286,7 @@ def build_planet_dataframe(output_dir, pkl_file):
 
             ## Simulation metadata from the HDF5 attributes (shared by every planet in this file)
             metadata = {
-                "Mdisk": data.get("Mdisk", np.nan),
-                "Mdot": data.get("Mdot", np.nan),
-                "Rd": data.get("Rd", np.nan),
-                "pla_eff": data.get("pla_eff", np.nan),
-                "f_plt": data.get("f_plt", np.nan),
-                "alpha_SS": data.get("alpha_SS", np.nan),
-                "psi_DW": data.get("psi_DW", np.nan),
+                **round_grid_params({key: data.get(key, np.nan) for key in GRID_KEYS}),
                 "last_t": float(data["t"][-1]),
             }
 
@@ -323,8 +355,6 @@ def build_disc_dataframe(output_dir, pkl_file, completed_only = True):
 
     disc_rows = []
 
-    grid_keys = ["Mdisk", "Mdot", "Rd", "alpha_SS", "psi_DW", "pla_eff", "f_plt"]
-
     for fname in sorted(os.listdir(output_dir)):
 
         if not fname.endswith(".h5"):
@@ -335,9 +365,10 @@ def build_disc_dataframe(output_dir, pkl_file, completed_only = True):
             if completed_only and not bool(f.attrs.get("complete", False)):
                 continue
 
+            ## Disc parameters with Mdisk, Mdot [Msun/Myr] and Rd rounded to the grid values
             disc_rows.append({
                 "file": fname,
-                **{key: f.attrs[key].item() for key in grid_keys if key in f.attrs},
+                **round_grid_params({key: f.attrs[key].item() for key in GRID_KEYS if key in f.attrs}),
             })
 
     ## Convert to dataframe and save to pkl file
@@ -364,7 +395,8 @@ def build_track_dataframe(output_dir, pkl_file, max_track_points = 2000):
 
     Returns:
         df_tracks: Dataframe with one row per planet. Rp_track and Mp_track hold
-            the thinned position [AU] and total mass [Mearth] arrays, from implantation onwards.
+            the thinned position [AU] and total mass [Mearth] arrays, from implantation onwards,
+            followed by the disc parameters of the planet's simulation.
     """
 
     track_rows = []
@@ -388,6 +420,9 @@ def build_track_dataframe(output_dir, pkl_file, max_track_points = 2000):
             Mes = np.array(f["Mes"])
             Rps = np.array(f["Rp"])
 
+            ## Disc parameters with Mdisk, Mdot [Msun/Myr] and Rd rounded to the grid values
+            metadata = round_grid_params({key: f.attrs[key].item() if key in f.attrs else np.nan for key in GRID_KEYS})
+
         for ip in range(len(Mcs)):
 
             ## The planet is NaN before it is inserted, so only keep the times after implantation
@@ -409,6 +444,9 @@ def build_track_dataframe(output_dir, pkl_file, max_track_points = 2000):
                 ## Thinned growth track
                 "Rp_track": Rp_track[keep],
                 "Mp_track": Mp_track[keep],
+
+                ## Simulation metadata
+                **metadata,
             })
 
     ## Convert to dataframe and save to pkl file
